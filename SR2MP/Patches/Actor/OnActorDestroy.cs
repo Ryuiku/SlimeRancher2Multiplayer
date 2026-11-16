@@ -36,6 +36,10 @@ internal static class OnActorDestroy
         var actor = actorObj.GetComponent<IdentifiableActor>();
         if (!actor)
             return true;
+
+        // Never announce the player being destroyed: every game uses the same id for its own player.
+        if (actor.identType != null && actor.identType.IsPlayer)
+            return true;
         
         // Prevents clients that dont own it from destroying it yia 'ResourceCycle.RegistryUpdate#1'
         var netActor = actorObj.GetComponent<NetworkActor>();
@@ -64,6 +68,7 @@ internal static class OnActorDestroy
             return true;
 
         ActorManager.Actors.Remove(actor.GetActorId().Value);
+        NetworkActorManager.KnownOwners.Remove(actor.GetActorId().Value);
 
         if (!NetworkActorManager.CanSendActorChanges)
             return true;

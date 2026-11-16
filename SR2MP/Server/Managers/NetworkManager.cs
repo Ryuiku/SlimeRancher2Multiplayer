@@ -122,16 +122,16 @@ internal sealed class NetworkManager
             if (packetReliability.HasFlag(PacketReliability.Ordered))
                 sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, data[0], endPoint) ?? 0;
 
-            var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, out var packetId);
+            var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, endPoint, out var packetId);
 
-            // Large reliable packets are handed to the reliability manager, which sends the chunks
-            // paced and resends only the ones that weren't acknowledged.
-            var paced = packetReliability.HasFlag(PacketReliability.Reliable) && splitResult.Count > 1 && reliabilityManager != null;
+            // Reliable packets are tracked until acknowledged. The reliability manager sends large ones
+            // itself (paced), and anything queued behind a large one, so they arrive in order.
+            var sendNow = true;
 
-            if (packetReliability.HasFlag(PacketReliability.Reliable))
-                reliabilityManager?.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability, alreadySent: !paced);
+            if (packetReliability.HasFlag(PacketReliability.Reliable) && reliabilityManager != null)
+                sendNow = reliabilityManager.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability);
 
-            if (!paced)
+            if (sendNow)
             {
                 for (var i = 0; i < splitResult.Count; i++)
                     SendRaw(splitResult.Chunks[i], endPoint);

@@ -11,18 +11,7 @@ internal sealed class InitialTreasurePodsHandler : BasePacketHandler<InitialTrea
     protected override bool Handle(InitialTreasurePodsPacket packet, IPEndPoint? _)
     {
         foreach (var (podId, podState) in packet.TreasurePods)
-        {
-            if (!GameState.pods.TryGetValue("pod" + podId, out var model))
-                continue;
-
-            if (podState == Il2Cpp.TreasurePod.State.OPEN)
-            {
-                HandlingPacket = true;
-                model.gameObj?.GetComponent<Il2Cpp.TreasurePod>().Activate();
-                HandlingPacket = false;
-            }
-            model.state = new ObservableValue<Il2Cpp.TreasurePod.State>(podState);
-        }
+            TreasurePodHandler.ApplyState("pod" + podId, podState, true);
 
         return true;
     }

@@ -12,6 +12,16 @@ internal sealed class InitialPrismaBarriersHandler : BasePacketHandler<InitialPr
 {
     protected override bool Handle(InitialPrismaBarriersPacket packet, IPEndPoint? _)
     {
+        var hostIds = new HashSet<string>();
+        foreach (var barrier in packet.Barriers)
+            hostIds.Add(barrier.ID);
+
+        SR2MP.Shared.Utils.HostWorldState.DropEntriesHostLacks(
+            GameState.AllPrismaBarriers(), hostIds, m => m._gameObj, "prisma barriers");
+
+        HandlingPacket = true;
+        try
+        {
         foreach (var barrier in packet.Barriers)
         {
             if (GameState.AllPrismaBarriers().TryGetValue(barrier.ID, out var barrierModel))
@@ -33,6 +43,11 @@ internal sealed class InitialPrismaBarriersHandler : BasePacketHandler<InitialPr
                 };
                 GameState.AllPrismaBarriers().Add(barrier.ID, barrierModel);
             }
+        }
+        }
+        finally
+        {
+            HandlingPacket = false;
         }
 
         return false;

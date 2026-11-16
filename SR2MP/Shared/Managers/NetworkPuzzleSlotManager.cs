@@ -55,6 +55,10 @@ internal static class NetworkPuzzleSlotManager
     /// </summary>
     internal static void Broadcast(PuzzleSlot slot, bool filled)
     {
+        // Not before the host's world has arrived: until then this is the joiner's own save.
+        if (!NetworkActorManager.CanSendActorChanges)
+            return;
+
         var id = ResolveId(slot, slot._model);
         if (string.IsNullOrEmpty(id))
             return;
@@ -75,7 +79,21 @@ internal static class NetworkPuzzleSlotManager
         var slots = SceneContext.Instance.GameModel?.slots;
         if (slots == null || !slots.TryGetValue(id, out var model) || model == null)
         {
+            // Kept in memory for when the slot loads here, and written to the world as well: a
+            // player who never loads that area (often the host) otherwise never saves it.
             PendingStates[id] = filled;
+
+            try
+            {
+                var created = slots != null ? GameState.InitializePuzzleSlot(id) : null;
+                if (created != null)
+                    created.filled = filled;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not record puzzle slot {id}: {ex.Message}");
+            }
+
             return;
         }
 

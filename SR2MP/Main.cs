@@ -204,6 +204,27 @@ public sealed class Main : StarlightExpansionV01
                 break;
 
             case "MainMenuEnvironment":
+                // The game can drop to the main menu by itself (a failed zone load does). The
+                // session must not keep running with no world behind it.
+                try
+                {
+                    if (Server.IsRunning)
+                    {
+                        SrLogger.LogWarning("Back at the main menu while hosting: closing the server.");
+                        Server.Close();
+                    }
+
+                    if (Client.IsConnected)
+                    {
+                        SrLogger.LogWarning("Back at the main menu while connected: disconnecting.");
+                        Client.Disconnect();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogError($"Could not end the session at the main menu: {ex.Message}");
+                }
+
                 InitializePlayer("BeatrixMainMenu", 0.85f);
                 break;
         }

@@ -60,9 +60,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         if (!actor)
             return true;
@@ -147,9 +165,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         if (!actor)
             return true;
@@ -217,9 +253,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         if (!actor)
             return true;
@@ -297,9 +351,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         if (!actor)
             return true;
@@ -382,9 +454,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         if (!actor)
             return true;
@@ -502,9 +592,27 @@ internal sealed partial class NetworkActorManager
             GameState.identifiablesByIdent.Add(type, actors);
         }
         
+        ReserveActorId(actorId.Value);
+
+        // Same rule as gadgets: the object is only built when its scene group is the one loaded
+        // here. The model is kept either way, and the object is built when this player gets there.
+        if (!NetworkSceneManager.IsSceneGroupLoaded(scene))
+        {
+            // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
+            ActorManager.Actors[actorId.Value] = model;
+            return true;
+        }
+
+        GameObject actor;
         HandlingPacket = true;
-        var actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
-        HandlingPacket = false;
+        try
+        {
+            actor = InstantiationHelpers.InstantiateActorFromModel(model.Cast<ActorModel>());
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         if (!actor)
             return true;

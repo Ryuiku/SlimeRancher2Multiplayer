@@ -12,30 +12,49 @@ internal sealed class MapUnlockHandler : BasePacketHandler<MapUnlockPacket>
 {
     protected override bool Handle(MapUnlockPacket packet, IPEndPoint? _)
     {
-        var gameEvent = Resources.FindObjectsOfTypeAll<StaticGameEvent>().FirstOrDefault(x => x._dataKey == packet.NodeID);
-        SceneContext.Instance.MapDirector.NotifyZoneUnlocked(gameEvent, false, 0);
-
-        var activator = Resources.FindObjectsOfTypeAll<MapNodeActivator>().FirstOrDefault(x => x._fogRevealEvent._dataKey == packet.NodeID);
-        activator?.StartCoroutine(activator.ActivateHologramAnimation());
-
-        var eventDirModel = SceneContext.Instance.eventDirector._model;
-        if (!eventDirModel.table.TryGetValue(MapEventKey, out var table))
+        // Record the unlock first: the visuals below need the map objects to be loaded, and when
+        // they threw, the unlock was neither saved here nor passed on to the other players.
+        try
         {
-            eventDirModel.table.Add(MapEventKey,
-                new CppCollections.Dictionary<string, EventRecordModel.Entry>());
-            table = eventDirModel.table[MapEventKey];
+            var eventDirModel = SceneContext.Instance.eventDirector._model;
+            if (!eventDirModel.table.TryGetValue(MapEventKey, out var table))
+            {
+                eventDirModel.table.Add(MapEventKey,
+                    new CppCollections.Dictionary<string, EventRecordModel.Entry>());
+                table = eventDirModel.table[MapEventKey];
+            }
+
+            table[packet.NodeID] = new EventRecordModel.Entry
+            {
+                count = 1,
+                createdRealTime = 0,
+                createdGameTime = 0,
+                dataKey = packet.NodeID,
+                eventKey = MapEventKey,
+                updatedRealTime = 0,
+                updatedGameTime = 0
+            };
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not record map unlock {packet.NodeID}: {ex.Message}");
         }
 
-        table[packet.NodeID] = new EventRecordModel.Entry
+        try
         {
-            count = 1,
-            createdRealTime = 0,
-            createdGameTime = 0,
-            dataKey = packet.NodeID,
-            eventKey = MapEventKey,
-            updatedRealTime = 0,
-            updatedGameTime = 0
-        };
+            var gameEvent = Resources.FindObjectsOfTypeAll<StaticGameEvent>().FirstOrDefault(x => x._dataKey == packet.NodeID);
+            if (gameEvent != null)
+                SceneContext.Instance.MapDirector.NotifyZoneUnlocked(gameEvent, false, 0);
+
+            var activator = Resources.FindObjectsOfTypeAll<MapNodeActivator>()
+                .FirstOrDefault(x => x._fogRevealEvent != null && x._fogRevealEvent._dataKey == packet.NodeID);
+            if (activator != null && activator.gameObject.activeInHierarchy)
+                activator.StartCoroutine(activator.ActivateHologramAnimation());
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Map unlock {packet.NodeID} recorded, visuals skipped: {ex.Message}");
+        }
 
         return true;
     }

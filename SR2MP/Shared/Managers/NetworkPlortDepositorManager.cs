@@ -46,6 +46,14 @@ internal static class NetworkPlortDepositorManager
     /// </summary>
     internal static void Broadcast(PlortDepositor depositor)
     {
+        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+            return;
+
+        // A joining player still has the depositors of their own save until the host's world
+        // arrived. Those values must not be sent to the host.
+        if (!NetworkActorManager.CanSendActorChanges)
+            return;
+
         var model = depositor._model;
         if (model == null)
             return;
@@ -65,12 +73,31 @@ internal static class NetworkPlortDepositorManager
     /// Applies a received fill amount
     /// or caches it when the depositor's model does not exist yet.
     /// </summary>
-    internal static void ApplyState(string id, int amountDeposited)
+    /// <param name="exact">
+    /// True for the host's full world state (join, resync), which replaces whatever we had.
+    /// A deposit made during play only ever raises the amount, so two players depositing at the
+    /// same moment can't undo each other.
+    /// </param>
+    internal static void ApplyState(string id, int amountDeposited, bool exact = false)
     {
         var depositors = SceneContext.Instance.GameModel?.depositors;
         if (depositors == null || !depositors.TryGetValue(id, out var model) || model == null)
         {
-            PendingStates[id] = amountDeposited;
+            if (exact || !PendingStates.TryGetValue(id, out var pending) || pending < amountDeposited)
+                PendingStates[id] = amountDeposited;
+
+            // Also written to the world, so a player who never loads that area (often the host) saves it.
+            try
+            {
+                var created = depositors != null ? GameState.InitializePlortDepositor(id) : null;
+                if (created != null && (exact || created.AmountDeposited < amountDeposited))
+                    created.AmountDeposited = amountDeposited;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not record plort depositor {id}: {ex.Message}");
+            }
+
             return;
         }
 
@@ -79,24 +106,49 @@ internal static class NetworkPlortDepositorManager
         if (model.AmountDeposited == amountDeposited)
             return;
 
+        if (!exact && model.AmountDeposited > amountDeposited)
+            return;
+
         model.AmountDeposited = amountDeposited;
 
         // The depositor may not be loaded on this machine (its zone isn't loaded), and
-        // NotifyParticipants throws without a game object.
+        // NotifyParticipants throws without a game object. The game reads the model when the zone loads.
         if (!model._gameObject)
             return;
 
-        model.NotifyParticipants();
+        // Each step on its own: one of them failing must not leave the door shut.
+        try
+        {
+            model.NotifyParticipants();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Plort depositor {id}: NotifyParticipants failed: {ex.Message}");
+        }
 
         var depositor = model._gameObject.GetComponent<PlortDepositor>();
         if (!depositor)
             return;
 
-        depositor.OnFilledChangedFromModel();
+        try
+        {
+            depositor.OnFilledChangedFromModel();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Plort depositor {id}: OnFilledChangedFromModel failed: {ex.Message}");
+        }
 
-        // the lock only re-evaluates when told to,
-        // it requires an extra invitation
-        depositor._puzLockable?.NotifySlotChanged(false);
+        try
+        {
+            // the lock only re-evaluates when told to,
+            // it requires an extra invitation
+            depositor._puzLockable?.NotifySlotChanged(false);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Plort depositor {id}: NotifySlotChanged failed: {ex.Message}");
+        }
     }
 
     /// <summary>

@@ -10,6 +10,12 @@ internal sealed partial class MultiplayerUI
 {
     public void Host(ushort port)
     {
+        // Every way of hosting starts without a code and sets its own afterwards.
+        hostJoinCode = string.Empty;
+        hostJoinCodeCopyStatus = string.Empty;
+        hostJoinCodePending = false;
+        hostJoinCodeIsManual = false;
+
         MenuEUtil.CloseOpenMenu();
         Main.Server.Start(port, true);
         Main.SetConfigValue("host_port", hostLocalPortInput);
@@ -29,6 +35,28 @@ internal sealed partial class MultiplayerUI
 
         Host(localPort);
         hostJoinCode = JoinCode.EncodeWithLan(address, tunnelPort, localPort);
+    }
+
+    private void TryHostSimple(ushort port)
+    {
+        hostManualError = string.Empty;
+        hostJoinCode = string.Empty;
+        hostJoinCodeCopyStatus = string.Empty;
+
+        Host(port);
+
+        hostJoinCodePending = true;
+        AutoHost.BeginManualJoinCode(port, code =>
+        {
+            hostJoinCodePending = false;
+
+            // The server may have been stopped or restarted on another port while we were looking up the address.
+            if (code != null && Main.Server.IsRunning && Main.Server.Port == port && string.IsNullOrEmpty(hostJoinCode))
+            {
+                hostJoinCode = code;
+                hostJoinCodeIsManual = true;
+            }
+        });
     }
 
     internal void StartAutoHost()
@@ -177,6 +205,14 @@ internal sealed partial class MultiplayerUI
 
         chatHidden = !chatHidden;
         internalChatToggle = true;
+
+        if (chatHidden)
+        {
+            // Hidden chat can't be focused. Leaving these set made the chat box keep swallowing keys.
+            isChatFocused = false;
+            if (activeInputId == "chat_input")
+                activeInputId = string.Empty;
+        }
 
         if (chatHidden && disabledInput)
         {

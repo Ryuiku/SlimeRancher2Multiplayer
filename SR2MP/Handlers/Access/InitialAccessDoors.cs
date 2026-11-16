@@ -14,6 +14,17 @@ internal sealed class InitialAccessDoorsHandler : BasePacketHandler<InitialAcces
     {
         var gameModel = GameState;
 
+        var hostIds = new HashSet<string>();
+        foreach (var door in packet.Doors)
+            hostIds.Add(door.ID);
+
+        SR2MP.Shared.Utils.HostWorldState.DropEntriesHostLacks(
+            gameModel.doors, hostIds, m => m.gameObj, "doors");
+
+        // Applying the host's doors must not be sent back to everyone as if this player opened them.
+        HandlingPacket = true;
+        try
+        {
         foreach (var door in packet.Doors)
         {
             if (gameModel.doors.TryGetValue(door.ID, out var doorModel))
@@ -33,6 +44,11 @@ internal sealed class InitialAccessDoorsHandler : BasePacketHandler<InitialAcces
 
                 gameModel.doors.Add(door.ID, doorModel);
             }
+        }
+        }
+        finally
+        {
+            HandlingPacket = false;
         }
 
         return false;

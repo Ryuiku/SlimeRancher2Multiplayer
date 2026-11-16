@@ -12,8 +12,19 @@ internal sealed class PuzzleSlotHandler : BasePacketHandler<PuzzleSlotPacket>
     protected override bool Handle(PuzzleSlotPacket packet, IPEndPoint? _)
     {
         HandlingPacket = true;
-        NetworkPuzzleSlotManager.ApplyState(packet.ID, packet.Filled);
-        HandlingPacket = false;
+        try
+        {
+            NetworkPuzzleSlotManager.ApplyState(packet.ID, packet.Filled);
+        }
+        catch (Exception ex)
+        {
+            // Still passed on to the other players.
+            SrLogger.LogWarning($"Could not apply puzzle slot {packet.ID}: {ex.Message}");
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         return true;
     }

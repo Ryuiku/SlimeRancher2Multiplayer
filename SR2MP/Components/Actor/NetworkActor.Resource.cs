@@ -96,7 +96,8 @@ internal sealed partial class NetworkActor
             {
                 var actorId = ActorId;
 
-                if (actorId.Value != 0)
+                // Not before the host's world is loaded: until then our actor ids mean other actors on the host.
+                if (actorId.Value != 0 && SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges)
                     Main.SendToAllOrServer(new ActorTransferPacket { ActorId = actorId, OwnerId = LocalID });
             }
         }

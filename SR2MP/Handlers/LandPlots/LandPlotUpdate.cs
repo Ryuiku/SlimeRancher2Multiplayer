@@ -47,6 +47,21 @@ internal sealed class NewLandPlotHandler : BasePacketHandler<NewLandPlotPacket>
 
         model.typeId = packet.ID;
 
+        if (!model.gameObj)
+        {
+            // Not loaded here: the game is not around to reset the plot, so the old plot's
+            // upgrades and crop would stay on the new one.
+            try
+            {
+                model.upgrades?.Clear();
+                model.resourceGrowerDefinition = null;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not reset replaced plot {packet.PlotID}: {ex.Message}");
+            }
+        }
+
         if (model.gameObj)
         {
             var location = model.gameObj.GetComponent<LandPlotLocation>();

@@ -60,6 +60,7 @@ internal sealed class ReSyncManager
         SendSwitchesPacket(endPoint);
         SendRefineryPacket(endPoint);
         SendPediaPacket(endPoint);
+        SendBlueprintsPacket(endPoint);
         SendMapPacket(endPoint);
         SendAccessDoorsPacket(endPoint);
         SendResourceNodesPacket(endPoint);
@@ -167,6 +168,8 @@ internal sealed class ReSyncManager
             Main.Server.SendToClient(componentsPacket,      client.EndPoint);
             Main.Server.SendToClient(eventsRaisedPacket,  client.EndPoint);
 
+            SendBlueprintsPacket(client.EndPoint);
+            SendConversationsPacket(client.EndPoint);
             SendWeatherPacket(client.EndPoint);
             SendActorsPacket(client.EndPoint, PlayerIdGenerator.GetPlayerIDNumber(client.PlayerId));
             SendGadgetLinksPacket(client.EndPoint);
@@ -265,6 +268,30 @@ internal sealed class ReSyncManager
 
         var packet = WeatherPacket.CreateFromModel(weatherRegistry._model, PacketType.InitialWeather);
         Main.Server.SendToClient(packet, client);
+    }
+
+    private static void SendBlueprintsPacket(IPEndPoint client)
+    {
+        try
+        {
+            var blueprints = SceneContext.Instance.GadgetDirector._model.blueprints;
+            if (blueprints == null)
+                return;
+
+            var packet = new SR2MP.Packets.Gadget.BlueprintsPacket();
+            foreach (var blueprint in blueprints)
+            {
+                if (blueprint)
+                    packet.Blueprints.Add(NetworkActorManager.GetPersistentID(blueprint));
+            }
+
+            if (packet.Blueprints.Count > 0)
+                Main.Server.SendToClient(packet, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send blueprints: {ex.Message}");
+        }
     }
 
     private static void SendPediaPacket(IPEndPoint client)
@@ -441,6 +468,9 @@ internal sealed class ReSyncManager
             if (NetworkDroneManager.IsDroneModel(model))
                 continue;
 
+            if (model.ident != null && model.ident.IsPlayer)
+                continue;
+
             actorsList.Add(NetworkActorManager.CreateInitialActor(model));
         }
 
@@ -461,7 +491,41 @@ internal sealed class ReSyncManager
             WorldTime = GameState.world.worldTime
         };
 
+        // Owners first: the client applies the actors as soon as they arrive and decides right
+        // then which of them to take over.
+        SendActorOwnersPacket(client);
         Main.Server.SendToClient(actorsPacket, client);
+    }
+
+    private static void SendActorOwnersPacket(IPEndPoint client)
+    {
+        try
+        {
+            var packet = new InitialActorOwnersPacket();
+            var ownerIndices = new Dictionary<string, int>();
+
+            foreach (var (actorId, owner) in ActorManager.CollectOwners())
+            {
+                // Owners who left don't count: their actors are up for grabs.
+                if (owner != LocalID && !PlayerManager.CheckPlayerExists(owner))
+                    continue;
+
+                if (!ownerIndices.TryGetValue(owner, out var index))
+                {
+                    index = packet.Owners.Count;
+                    packet.Owners.Add(owner);
+                    ownerIndices[owner] = index;
+                }
+
+                packet.Actors.Add((actorId, index));
+            }
+
+            Main.Server.SendToClient(packet, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send actor owners: {ex.Message}");
+        }
     }
 
     private static void SendGadgetLinksPacket(IPEndPoint client)

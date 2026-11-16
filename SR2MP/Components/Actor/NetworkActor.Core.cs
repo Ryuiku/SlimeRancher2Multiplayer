@@ -55,7 +55,39 @@ internal sealed partial class NetworkActor : MonoBehaviour
     /// </summary>
     internal float LastRemoteClaimTime = -1000f;
 
-    internal bool RecentlyClaimedByOtherPlayer => UnityEngine.Time.time - LastRemoteClaimTime < 2f;
+    // How long we leave an actor alone after another player claimed it. Random per claim: with a
+    // fixed time, two players vacuuming the same item kept grabbing it back at the same instant.
+    private float remoteClaimLockout = 2f;
+
+    internal bool RecentlyClaimedByOtherPlayer => UnityEngine.Time.time - LastRemoteClaimTime < remoteClaimLockout;
+
+    internal void NoteRemoteClaim()
+    {
+        LastRemoteClaimTime = UnityEngine.Time.time;
+        remoteClaimLockout = UnityEngine.Random.Range(1.5f, 3f);
+    }
+
+    /// <summary>
+    /// Time this game last claimed the actor itself (vac, a slime starting to eat it, waking up nearby).
+    /// </summary>
+    internal float LastLocalClaimTime = -1000f;
+
+    /// <summary>
+    /// Makes sure the owner is known and the "owner still there" timer is running. Start() does
+    /// this too, but ownership is decided right after an actor is created, before Start() has run.
+    /// </summary>
+    internal void EnsureOwnerInfo()
+    {
+        if (ownerSilenceThreshold <= 0f)
+            ResetOwnerValidityTime();
+
+        if (LocallyOwned || !string.IsNullOrEmpty(CurrentOwnerId))
+            return;
+
+        var id = ActorId.Value;
+        if (id != 0 && NetworkActorManager.KnownOwners.TryGetValue(id, out var owner))
+            CurrentOwnerId = owner;
+    }
 
     private void UpdateOwnerValidity() => lastOwnerHeardTime = UnityEngine.Time.time;
 
@@ -152,6 +184,7 @@ internal sealed partial class NetworkActor : MonoBehaviour
 
             CachedLocallyOwned = LocallyOwned;
             ResetOwnerValidityTime();
+            EnsureOwnerInfo();
 
             GetActorType();
 
@@ -224,6 +257,8 @@ internal sealed partial class NetworkActor : MonoBehaviour
             // When an actor wakes up near us (it came into our loaded area), only take it over if nobody
             // else is actively simulating it. Taking it from a player who is carrying it pulled it
             // out of their vac, and left it frozen for everyone else.
+            EnsureOwnerInfo();
+
             if (!hibernating && IsActivelyOwnedByOtherPlayer)
             {
                 LocallyOwned = false;
@@ -233,17 +268,25 @@ internal sealed partial class NetworkActor : MonoBehaviour
             LocallyOwned = !hibernating;
 
             if (hibernating)
+            {
                 Main.SendToAllOrServer(new ActorUnloadPacket
                 {
                     ActorId  = actorId,
                     SenderId = LocalID
                 });
+            }
             else
+            {
+                CurrentOwnerId = LocalID;
+                LastLocalClaimTime = UnityEngine.Time.time;
+                NetworkActorManager.RememberOwner(actorId.Value, LocalID);
+
                 Main.SendToAllOrServer(new ActorTransferPacket
                 {
                     ActorId = actorId,
                     OwnerId = LocalID
                 });
+            }
         }
         catch (Exception ex)
         {

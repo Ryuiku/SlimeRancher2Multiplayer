@@ -38,6 +38,10 @@ public sealed class SR2MPClient
     /// </summary>
     internal IPEndPoint? FallbackEndPoint;
 
+    // Goes up every time a connection is started or torn down. A receive thread, timer or queued
+    // action that belongs to an older connection compares it and does nothing.
+    private int connectionGeneration;
+
     private bool shownConnectionError;
     private bool subscribedToQuitting;
 
@@ -133,6 +137,7 @@ public sealed class SR2MPClient
 
         try
         {
+            var generation = Interlocked.Increment(ref connectionGeneration);
             var parsedIp = IPAddress.Parse(serverIp);
 
             if (parsedIp.AddressFamily == AddressFamily.InterNetworkV6)
@@ -154,6 +159,9 @@ public sealed class SR2MPClient
 
             PacketDeduplication.Clear();
             NetworkActorManager.InitialActorsLoaded = false;
+            NetworkActorManager.KnownOwners.Clear();
+            NetworkActorManager.ClearDeferredWorldChanges();
+            NetworkGordoSlimeManager.Reset();
 
             serverEndPoint = new IPEndPoint(parsedIp, port);
             udpClient.Connect(serverEndPoint);
@@ -171,13 +179,14 @@ public sealed class SR2MPClient
             isConnected = true;
             connectionAcknowledged = false;
 
-            receiveThread = new Thread(new Action(ReceiveLoop))
+            var socket = udpClient;
+            receiveThread = new Thread(new Action(() => ReceiveLoop(socket, generation)))
             {
                 IsBackground = true
             };
             receiveThread.Start();
 
-            connectionTimeoutTimer = new Timer(CheckConnectionTimeout, null,
+            connectionTimeoutTimer = new Timer(CheckConnectionTimeout, generation,
                 TimeSpan.FromSeconds(timeoutSeconds), Timeout.InfiniteTimeSpan);
 
             if (!subscribedToQuitting)
@@ -200,34 +209,24 @@ public sealed class SR2MPClient
         catch (Exception ex)
         {
             SrLogger.LogError($"Error connecting to the Server: {ex}");
-            connectionAcknowledged = false;
-            isConnected = false;
-            isConnecting = false;
+            FallbackEndPoint = null;
+            TearDownConnection();
             throw;
         }
     }
 
+    private bool IsCurrentConnection(int generation) => generation == Volatile.Read(ref connectionGeneration);
+
     private void CheckConnectionTimeout(object? state)
     {
+        if (state is int generation && !IsCurrentConnection(generation))
+            return;
+
         if (connectionAcknowledged || !isConnected)
             return;
 
-        var fallback = FallbackEndPoint;
-        FallbackEndPoint = null;
-
-        if (fallback != null)
-        {
-            SrLogger.LogWarning("Host did not answer on the local network, trying their public address...",
-                $"Connection timeout, falling back to {fallback}");
-
-            MainThreadDispatcher.Instance.Enqueue(() =>
-            {
-                isConnecting = false;
-                Disconnect();
-                Connect(fallback.Address.ToString(), fallback.Port);
-            });
+        if (TryStartFallback(Volatile.Read(ref connectionGeneration), "did not answer"))
             return;
-        }
 
         SrLogger.LogError("Connection timeout: Server did not respond in time");
 
@@ -235,19 +234,82 @@ public sealed class SR2MPClient
         Disconnect();
     }
 
-    internal void UpdateConnectionStatus(bool state) => isConnected = state;
-
-    private void ReceiveLoop()
+    /// <summary>
+    /// The host's LAN address from a join code did not work out (no answer, or something else on this
+    /// network refused the connection). Quietly drops that attempt and connects to the host's public
+    /// address instead. Returns false if there is no other address to try.
+    /// </summary>
+    private bool TryStartFallback(int generation, string reason)
     {
-        if (udpClient == null)
+        var fallback = Interlocked.Exchange(ref FallbackEndPoint, null);
+        if (fallback == null)
+            return false;
+
+        connectionTimeoutTimer?.Dispose();
+
+        SrLogger.LogWarning("Host did not answer on the local network, trying their public address...",
+            $"LAN address {reason}, falling back to {fallback}");
+
+        MainThreadDispatcher.Instance.Enqueue(() =>
         {
-            SrLogger.LogError("UDP client is null in ReceiveLoop!");
-            return;
+            // Something else happened in the meantime: the host answered after all, or the player gave up.
+            if (!IsCurrentConnection(generation) || connectionAcknowledged || !isConnected)
+                return;
+
+            TearDownConnection();
+
+            // Anything still queued came from the attempt we just dropped.
+            MainThreadDispatcher.Instance.DropClientPackets();
+
+            try
+            {
+                Connect(fallback.Address.ToString(), fallback.Port);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogError($"Could not connect to the host's public address: {ex.Message}");
+                MultiplayerUI.Instance.RegisterSystemMessage("Could not join the world, check the MelonLoader console for details",
+                    $"SYSTEM_JOIN_FALLBACK_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", MultiplayerUI.SystemMessageClose);
+            }
+        });
+
+        return true;
+    }
+
+    // Stops the current connection without telling anyone: no chat messages, no leave packet,
+    // no disconnect event. Used when an attempt is replaced by another one.
+    private void TearDownConnection()
+    {
+        Interlocked.Increment(ref connectionGeneration);
+
+        isConnected = false;
+        isConnecting = false;
+        connectionAcknowledged = false;
+
+        connectionTimeoutTimer?.Dispose();
+        connectionTimeoutTimer = null;
+
+        try
+        {
+            reliabilityManager?.Stop();
+            udpClient?.Close();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Error closing the connection: {ex.Message}");
         }
 
+        udpClient = null;
+        receiveThread = null;
+    }
+
+    internal void UpdateConnectionStatus(bool state) => isConnected = state;
+
+    private void ReceiveLoop(UdpClient socket, int generation)
+    {
         SrLogger.LogMessage("Client ReceiveLoop started!");
 
-        EndPoint remoteEp = udpClient.Client.AddressFamily switch
+        EndPoint remoteEp = socket.Client.AddressFamily switch
         {
             AddressFamily.InterNetwork => new IPEndPoint(IPAddress.Any, 0),
             AddressFamily.InterNetworkV6 => new IPEndPoint(IPAddress.IPv6Any, 0),
@@ -258,14 +320,18 @@ public sealed class SR2MPClient
 
         try
         {
-            while (isConnected)
+            while (isConnected && IsCurrentConnection(generation))
             {
                 try
                 {
-                    var receivedBytes = udpClient.Client.ReceiveFrom(receiveBuffer, ref remoteEp);
+                    var receivedBytes = socket.Client.ReceiveFrom(receiveBuffer, ref remoteEp);
 
                     if (receivedBytes == 0)
                         continue;
+
+                    // This connection was replaced while we were waiting.
+                    if (!IsCurrentConnection(generation))
+                        break;
 
                     packetManager.HandlePacket(receiveBuffer, receivedBytes, (IPEndPoint)remoteEp);
                     SrLogger.LogPacketSize($"Received {receivedBytes} bytes",
@@ -273,6 +339,14 @@ public sealed class SR2MPClient
                 }
                 catch (SocketException ex)
                 {
+                    // The connection was closed on purpose (disconnect, or replaced by another attempt).
+                    if (!IsCurrentConnection(generation))
+                        break;
+
+                    // Something on this network refused the host's LAN address: use the public one.
+                    if (!connectionAcknowledged && TryStartFallback(generation, "refused the connection"))
+                        break;
+
                     // This prevents WSAEINTR from logging, this is correct
                     if (ex.ErrorCode is not 10004 and not 10054)
                     {
@@ -289,6 +363,11 @@ public sealed class SR2MPClient
 
                     MultiplayerUI.Instance.RegisterSystemMessage("Could not join the world, check the MelonLoader console for details", $"SYSTEM_JOIN_10054_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", MultiplayerUI.SystemMessageClose);
                     Disconnect();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The socket was closed under us.
+                    break;
                 }
                 catch (Exception ex)
                 {
@@ -347,16 +426,16 @@ public sealed class SR2MPClient
             if (reliability.HasFlag(PacketReliability.Ordered))
                 sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, packetType, serverEndPoint) ?? 0;
 
-            var splitResult = PacketChunkManager.SplitPacket(data, reliability, channel, sequenceNumber, out var packetId);
+            var splitResult = PacketChunkManager.SplitPacket(data, reliability, channel, sequenceNumber, serverEndPoint, out var packetId);
 
-            // Large reliable packets are handed to the reliability manager, which sends the chunks
-            // paced and resends only the ones that weren't acknowledged.
-            var paced = reliability.HasFlag(PacketReliability.Reliable) && splitResult.Count > 1 && reliabilityManager != null;
+            // Reliable packets are tracked until acknowledged. The reliability manager sends large ones
+            // itself (paced), and anything queued behind a large one, so they arrive in order.
+            var sendNow = true;
 
-            if (reliability.HasFlag(PacketReliability.Reliable))
-                reliabilityManager?.TrackPacket(splitResult, serverEndPoint, packetId, data[0], reliability, alreadySent: !paced);
+            if (reliability.HasFlag(PacketReliability.Reliable) && reliabilityManager != null)
+                sendNow = reliabilityManager.TrackPacket(splitResult, serverEndPoint, packetId, data[0], reliability);
 
-            if (!paced)
+            if (sendNow)
             {
                 for (var i = 0; i < splitResult.Count; i++)
                     SendRaw(splitResult.Chunks[i], serverEndPoint);
@@ -421,10 +500,30 @@ public sealed class SR2MPClient
 
             PacketDeduplication.Clear();
             NetworkActorManager.InitialActorsLoaded = false;
+            FallbackEndPoint = null;
+
+            // From here on the receive thread of this connection stops quietly instead of
+            // reporting the closed socket as a failed join.
+            Interlocked.Increment(ref connectionGeneration);
 
             isConnected = false;
             isConnecting = false;
             connectionAcknowledged = false;
+
+            // Nobody else moves the actors in this world copy anymore. On the main thread: this can
+            // be reached from a timer, and game objects may only be touched from the main thread.
+            MainThreadDispatcher.Instance.Enqueue(() =>
+            {
+                try
+                {
+                    if (!isConnected && !isConnecting)
+                        ActorManager.ReleaseAllToLocal();
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogWarning($"Could not take actors back after disconnecting: {ex.Message}");
+                }
+            });
 
             connectionTimeoutTimer?.Dispose();
             connectionTimeoutTimer = null;

@@ -14,7 +14,8 @@ internal sealed class AmmoAddHandler : BasePacketHandler<AmmoAddPacket>
     {
         var ammo = NetworkAmmoManager.GetAmmo(packet.ID);
 
-        if (ammo == null) return false;
+        // Not loaded on this machine. The host still passes it on: the other players may have it.
+        if (ammo == null) return true;
 
         if (!ActorManager.ActorTypes.TryGetValue(packet.Identifiable, out var ident) || ident == null)
         {

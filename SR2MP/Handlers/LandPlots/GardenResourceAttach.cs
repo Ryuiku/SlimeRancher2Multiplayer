@@ -11,17 +11,18 @@ internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPa
 {
     protected override bool Handle(ResourceAttachPacket packet, IPEndPoint? _)
     {
+        // "Not loaded on this machine" still returns true: the host passes it on to players who have it.
         if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model))
-            return false;
+            return true;
 
-        var actor = model.Cast<ActorModel>();
+        var actor = model.TryCast<ActorModel>();
 
-        if (!actor.TryGetNetworkComponent(out var networkComponent))
-            return false;
+        if (actor == null || !actor.TryGetNetworkComponent(out var networkComponent))
+            return true;
 
         var cycle = networkComponent.GetComponent<ResourceCycle>();
         if (cycle == null)
-            return false;
+            return true;
 
         Joint? targetJoint = null;
         SpawnResource? resolvedSpawner = null;
@@ -64,7 +65,7 @@ internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPa
         }
 
         if (targetJoint == null || resolvedSpawner == null)
-            return false;
+            return true;
 
         HandlingPacket = true;
         cycle.Attach(targetJoint);

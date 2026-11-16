@@ -98,6 +98,13 @@ internal sealed class ClientPacketManager
         }
         else
         {
+            // Never acknowledge a chunk that can't be stored.
+            if (chunkIndex >= totalChunks)
+            {
+                SrLogger.LogWarning($"Invalid chunk parameters: index={chunkIndex}, total={totalChunks}");
+                return;
+            }
+
             if (reliability.HasFlag(PacketReliability.Reliable))
             {
                 // A resent chunk of a packet we already processed: the sender missed our ack, repeat it.

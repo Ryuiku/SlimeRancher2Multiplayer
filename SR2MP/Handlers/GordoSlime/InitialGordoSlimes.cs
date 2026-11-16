@@ -38,6 +38,9 @@ internal sealed class InitialGordoSlimeLoadHandler : BasePacketHandler<InitialGo
             {
                 NetworkGordoSlimeManager.MarkPopped(gordoSlime.Id);
                 NetworkGordoSlimeManager.MarkRewarded(gordoSlime.Id);
+
+                // Keep the game's own "popped" value, not "fully fed"
+                gordoModel.GordoEatenCount = NetworkGordoSlimeManager.PoppedEatenCount;
             }
             
             gordoModel.gordoSeen = gordoSlime.WasSeen && !gordoSlime.Popped;

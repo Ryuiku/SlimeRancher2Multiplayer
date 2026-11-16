@@ -11,6 +11,8 @@ internal static class OnPrismaBarrierActivate
     {
         if (HandlingPacket) return;
 
+        if (!SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges) return;
+
         var id = "";
         foreach (var pair in GameState.AllPrismaBarriers())
         {

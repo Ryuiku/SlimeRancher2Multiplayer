@@ -12,7 +12,7 @@ internal sealed partial class MultiplayerUI : MonoBehaviour
 
     // Shown in the window title so everyone can check they run the same build
     // (the network protocol changed, so mixed builds can't play together).
-    internal const string TestBuildTag = "test build 1";
+    internal const string TestBuildTag = "test build 2";
 
     private bool didUnfocus;
 

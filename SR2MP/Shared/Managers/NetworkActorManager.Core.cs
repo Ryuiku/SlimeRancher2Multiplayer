@@ -24,6 +24,74 @@ internal sealed partial class NetworkActorManager
         Main.Server.IsRunning || (Main.Client.IsConnected && InitialActorsLoaded);
     public readonly Dictionary<int, IdentifiableType> ActorTypes = new();
 
+    /// <summary>
+    /// Last known owner of each actor, by actor id. The NetworkActor components that normally hold
+    /// this are thrown away and recreated whenever a zone loads or the host's world is applied, and
+    /// actors in zones that aren't loaded here have none at all. Without this, a player who joined,
+    /// resynced or walked through a portal believed nobody owned anything and took every actor
+    /// nearby, including the item another player was carrying.
+    /// </summary>
+    internal static readonly Dictionary<long, string> KnownOwners = new();
+
+    internal static void RememberOwner(long actorId, string? ownerId)
+    {
+        if (actorId == 0)
+            return;
+
+        if (string.IsNullOrEmpty(ownerId))
+            KnownOwners.Remove(actorId);
+        else
+            KnownOwners[actorId] = ownerId;
+    }
+
+    /// <summary>
+    /// The owner of every actor this game knows about, for a player who is joining or resyncing.
+    /// </summary>
+    internal Dictionary<long, string> CollectOwners()
+    {
+        var owners = new Dictionary<long, string>(KnownOwners);
+
+        foreach (var (id, model) in Actors)
+        {
+            try
+            {
+                if (model == null || !model.TryGetNetworkComponent(out var netActor))
+                    continue;
+
+                var owner = netActor.LocallyOwned ? LocalID : netActor.CurrentOwnerId;
+
+                if (!string.IsNullOrEmpty(owner))
+                    owners[id] = owner;
+            }
+            catch { /* ignored */ }
+        }
+
+        return owners;
+    }
+
+    /// <summary>
+    /// Multiplayer ended (server closed or we disconnected). Actors other players were simulating
+    /// are frozen on our side and nobody will move them anymore, so take them all back.
+    /// </summary>
+    internal void ReleaseAllToLocal()
+    {
+        KnownOwners.Clear();
+        ClearDeferredWorldChanges();
+
+        foreach (var model in Actors.Values.ToArray())
+        {
+            try
+            {
+                if (model == null || !model.TryGetNetworkComponent(out var netActor))
+                    continue;
+
+                netActor.CurrentOwnerId = string.Empty;
+                netActor.LocallyOwned = true;
+            }
+            catch { /* ignored */ }
+        }
+    }
+
     public static int GetPersistentID(IdentifiableType type)
         => GameContext.Instance.AutoSaveDirector._saveReferenceTranslation.GetPersistenceId(type);
 
@@ -77,58 +145,214 @@ internal sealed partial class NetworkActorManager
             if (!gameModel)
                 continue;
 
-            var scene = SystemContext.Instance.SceneLoader.CurrentSceneGroup;
-
-            foreach (var actor in gameModel!.identifiables)
+            try
             {
-                if (actor.value.ident.IsPlayer)
-                    continue;
+                RebuildActorsForCurrentScene(gameModel!);
+            }
+            catch (Exception ex)
+            {
+                // This loop must survive: if it stops, nothing in a newly loaded zone is synced for
+                // the rest of the session.
+                HandlingPacket = false;
+                SrLogger.LogError($"Rebuilding actors after a zone load failed: {ex}");
+            }
 
-                if (actor.value.TryCast<ActorModel>() == null)
-                    continue;
+            try
+            {
+                TakeOwnershipOfNearby();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogError($"Taking ownership after a zone load failed: {ex}");
+            }
+        }
+    }
 
-                var obj = actor.value.GetGameObject();
+    private void RebuildActorsForCurrentScene(GameModel gameModel)
+    {
+        var scene = SystemContext.Instance.SceneLoader.CurrentSceneGroup;
+
+        // Copy first: destroying and building objects below can change the game's table.
+        var models = new List<ActorModel>();
+        foreach (var actor in gameModel.identifiables)
+        {
+            var value = actor.value;
+            if (value == null || value.ident == null || value.ident.IsPlayer)
+                continue;
+
+            var actorModel = value.TryCast<ActorModel>();
+            if (actorModel != null)
+                models.Add(actorModel);
+        }
+
+        foreach (var model in models)
+        {
+            try
+            {
+                var obj = model.GetGameObject();
                 if (!obj)
                     continue;
 
                 Object.Destroy(obj);
-                Actors.Remove(actor.value.actorId.Value);
+                Actors.Remove(model.actorId.Value);
             }
-
-            foreach (var actor2 in gameModel.identifiables)
+            catch (Exception ex)
             {
-                if (actor2.value.ident.IsPlayer)
-                    continue;
+                SrLogger.LogWarning($"Could not clear actor before rebuilding a zone: {ex.Message}");
+            }
+        }
 
-                var model = actor2.value.TryCast<ActorModel>();
-
-                if (model == null)
-                    continue;
-
+        var failures = 0;
+        foreach (var model in models)
+        {
+            try
+            {
                 if (!model.ident.prefab)
                     continue;
 
-                if (actor2.value.sceneGroup != scene)
+                if (model.sceneGroup != scene)
                     continue;
 
+                GameObject obj;
                 HandlingPacket = true;
-                var obj = InstantiationHelpers.InstantiateActorFromModel(model);
-                HandlingPacket = false;
+                try
+                {
+                    obj = InstantiationHelpers.InstantiateActorFromModel(model);
+                }
+                finally
+                {
+                    HandlingPacket = false;
+                }
 
                 if (!obj)
                     continue;
 
-                var networkComponent = obj.AddComponent<NetworkActor>();
+                var networkComponent = obj.GetComponent<NetworkActor>();
+                if (!networkComponent)
+                    networkComponent = obj.AddComponent<NetworkActor>();
 
                 networkComponent.previousPosition = model.lastPosition;
                 networkComponent.nextPosition     = model.lastPosition;
                 networkComponent.previousRotation = model.lastRotation;
                 networkComponent.nextRotation     = model.lastRotation;
 
-                Actors.Add(model.actorId.Value, model);
+                Actors[model.actorId.Value] = model;
             }
+            catch (Exception ex)
+            {
+                if (failures++ < 5)
+                    SrLogger.LogWarning($"Could not rebuild an actor after a zone load: {ex.Message}");
+            }
+        }
 
-            TakeOwnershipOfNearby();
+        if (failures > 5)
+            SrLogger.LogWarning($"{failures} actors could not be rebuilt after the zone load.");
+    }
+
+    /// <summary>
+    /// Keeps this game's id counter above an id that arrived from the network, when that id is in
+    /// this player's own range. Otherwise the game can later hand out the same id again, and
+    /// registering two actors under one id fails inside the game's own loading code.
+    /// </summary>
+    internal static void ReserveActorId(long id)
+    {
+        try
+        {
+            var provider = GameState?._actorIdProvider;
+            if (provider == null)
+                return;
+
+            var next = provider._nextActorId;
+            if (id < next || id / ActorIdOffset != next / ActorIdOffset)
+                return;
+
+            provider._nextActorId = id + 1;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    // Actor spawns and destroys that arrived while this game was loading a zone. The game fills
+    // its actor table over several frames during a load; changing that table underneath it can
+    // make the load fail, and a failed load sends the player back to the main menu.
+    private static readonly Queue<Action> DeferredWorldChanges = new();
+    private static float deferredSince;
+    private const float MaxDeferSeconds = 60f;
+    private const int MaxDeferredChanges = 20000;
+
+    private static bool IsSceneLoading()
+    {
+        try
+        {
+            var loader = SystemContext.Instance != null ? SystemContext.Instance.SceneLoader : null;
+            return loader != null && loader.IsSceneLoadInProgress;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Queues <paramref name="apply"/> if a zone is loading. Returns false when the caller should apply it now.
+    /// </summary>
+    internal static bool DeferDuringSceneLoad(Action apply)
+    {
+        if (!IsSceneLoading())
+        {
+            // Keep the order: anything still queued goes first.
+            RunDeferredWorldChanges(true);
+            return false;
+        }
+
+        if (DeferredWorldChanges.Count == 0)
+            deferredSince = UnityEngine.Time.realtimeSinceStartup;
+
+        DeferredWorldChanges.Enqueue(apply);
+        return true;
+    }
+
+    internal static void RunDeferredWorldChanges(bool force = false)
+    {
+        if (DeferredWorldChanges.Count == 0)
+            return;
+
+        if (!force && IsSceneLoading()
+            && UnityEngine.Time.realtimeSinceStartup - deferredSince < MaxDeferSeconds
+            && DeferredWorldChanges.Count < MaxDeferredChanges)
+            return;
+
+        while (DeferredWorldChanges.TryDequeue(out var apply))
+        {
+            try
+            {
+                apply();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogError($"A queued actor change failed: {ex.Message}");
+            }
+            finally
+            {
+                HandlingPacket = false;
+            }
+        }
+    }
+
+    internal static void ClearDeferredWorldChanges() => DeferredWorldChanges.Clear();
+
+    internal static bool IsPlayerActor(ActorId id)
+    {
+        try
+        {
+            return GameState.TryGetIdentifiableModel(id, out var model)
+                   && model != null && model.ident != null && model.ident.IsPlayer;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -172,9 +396,20 @@ internal sealed partial class NetworkActorManager
                 if (!actor.TryGetNetworkComponent(out var netActor))
                     continue;
 
-                // Never take an actor from another player who is actively simulating it (they may be carrying it).
-                if (!onlyUnownedSlimes && netActor.IsActivelyOwnedByOtherPlayer)
-                    continue;
+                netActor.EnsureOwnerInfo();
+
+                if (!onlyUnownedSlimes)
+                {
+                    // Never take an actor from another player who is actively simulating it (they may be carrying it).
+                    if (netActor.IsActivelyOwnedByOtherPlayer)
+                        continue;
+
+                    // Asleep on our side: we would own it without simulating it, and it would sit frozen
+                    // for whoever is actually near it. It is claimed when it wakes up here.
+                    var regionMember = netActor.RegionMember ? netActor.RegionMember : netActor.GetComponent<Il2CppMonomiPark.SlimeRancher.Regions.RegionMember>();
+                    if (regionMember && regionMember!._hibernating)
+                        continue;
+                }
 
                 if (onlyUnownedSlimes)
                 {
@@ -242,7 +477,9 @@ internal sealed partial class NetworkActorManager
                 if (!actor.TryGetNetworkComponent(out var netActor))
                     continue;
 
-                if (netActor.CurrentOwnerId == LocalID || PlayerManager.CheckPlayerExists(netActor.CurrentOwnerId))
+                netActor.EnsureOwnerInfo();
+
+                if (netActor.LocallyOwned || netActor.CurrentOwnerId == LocalID || PlayerManager.CheckPlayerExists(netActor.CurrentOwnerId))
                     continue;
 
                 var actorId = netActor.ActorId;

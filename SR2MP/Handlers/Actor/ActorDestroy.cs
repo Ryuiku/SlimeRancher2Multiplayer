@@ -13,47 +13,67 @@ internal sealed class ActorDestroyHandler : BasePacketHandler<ActorDestroyPacket
 {
     protected override bool Handle(ActorDestroyPacket packet, IPEndPoint? _)
     {
-        //if (!actorManager.Actors.TryGetValue(packet.ActorId.Value, out var actor))
-        //{
-        //    SrLogger.LogDebug($"Actor {packet.ActorId.Value} doesn't exist (already destroyed?)", SrLogTarget.Both);
-        //    return false;
-        //}
-
-        if (GameState.TryGetIdentifiableModel(packet.ActorId, out var actor))
+        // Every game gives its own player the same actor id. A destroy for it must never be
+        // applied or passed on: each receiver would delete its own player.
+        if (NetworkActorManager.IsPlayerActor(packet.ActorId))
         {
-            HandlingPacket = true;
-            try
-            {
-                // Remove the drone station if it's a drone
-                if (actor.TryCast<DroneStationGadgetModel>() != null)
-                    NetworkDroneManager.RemoveStationDrone(packet.ActorId);
-
-                NetworkGadgetManager.RemoveTeleporterGadget(actor);
-                NetworkGadgetManager.ForgetGadgetLink(packet.ActorId);
-
-                GameState.identifiables.Remove(packet.ActorId);
-                GameState.identifiablesByIdent[actor.ident].Remove(actor);
-                GameState.DestroyIdentifiableModel(actor);
-                ActorManager.Actors.Remove(actor.actorId.Value);
-
-                StartCoroutine(DestroyActor(actor));
-            }
-            finally
-            {
-                HandlingPacket = false;
-            }
+            SrLogger.LogWarning("Ignored a destroy packet that targets the player.");
+            return false;
         }
+
+        NetworkActorManager.KnownOwners.Remove(packet.ActorId.Value);
+
+        // While this game is loading a zone the destroy is applied afterwards. It is still passed
+        // on to the other players right away.
+        if (!NetworkActorManager.DeferDuringSceneLoad(() => Apply(packet)))
+            Apply(packet);
 
         return true;
     }
 
-    private static IEnumerator DestroyActor(IdentifiableModel actor)
+    private static void Apply(ActorDestroyPacket packet)
+    {
+        if (!GameState.TryGetIdentifiableModel(packet.ActorId, out var actor))
+        {
+            ActorManager.Actors.Remove(packet.ActorId.Value);
+            return;
+        }
+
+        HandlingPacket = true;
+        try
+        {
+            // Take the object before the model goes away, the model is how it is found.
+            GameObject? obj = null;
+            try { obj = actor.GetGameObject(); } catch { /* ignored */ }
+
+            // Remove the drone station if it's a drone
+            if (actor.TryCast<DroneStationGadgetModel>() != null)
+                NetworkDroneManager.RemoveStationDrone(packet.ActorId);
+
+            NetworkGadgetManager.RemoveTeleporterGadget(actor);
+            NetworkGadgetManager.ForgetGadgetLink(packet.ActorId);
+
+            GameState.identifiables.Remove(packet.ActorId);
+            if (actor.ident != null && GameState.identifiablesByIdent.TryGetValue(actor.ident, out var sameType))
+                sameType.Remove(actor);
+            GameState.DestroyIdentifiableModel(actor);
+            ActorManager.Actors.Remove(packet.ActorId.Value);
+
+            StartCoroutine(DestroyActor(actor, obj));
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
+    }
+
+    private static IEnumerator DestroyActor(IdentifiableModel actor, GameObject? known)
     {
         for (int i = 0; i < 20; i++)
         {
             try
             {
-                var obj = actor.GetGameObject();
+                var obj = known ? known : actor.GetGameObject();
 
                 if (obj)
                 {

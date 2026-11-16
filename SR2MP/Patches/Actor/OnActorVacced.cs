@@ -17,26 +17,75 @@ internal static class OnActorVacced
         if (!networkActor)
             return;
 
+        // Another player just grabbed it or is carrying it. It stays theirs.
+        if (!networkActor.LocallyOwned && networkActor.RecentlyClaimedByOtherPlayer)
+            return;
+
         Claim(networkActor);
     }
 
-    internal static void Claim(NetworkActor networkActor)
+    /// <summary>
+    /// Makes this game the owner of the actor and tells everyone. Returns false if that is not
+    /// possible right now (the host's world hasn't loaded yet).
+    /// </summary>
+    internal static bool Claim(NetworkActor networkActor)
     {
         if (!NetworkActorManager.CanSendActorChanges)
-            return;
+            return false;
 
         var actorId = networkActor.ActorId;
         if (actorId.Value == 0)
-            return;
+            return false;
 
         networkActor.LocallyOwned = true;
         networkActor.CurrentOwnerId = LocalID;
+        networkActor.LastLocalClaimTime = UnityEngine.Time.time;
+        NetworkActorManager.RememberOwner(actorId.Value, LocalID);
 
         Main.SendToAllOrServer(new ActorTransferPacket
         {
             ActorId = actorId,
             OwnerId = LocalID
         });
+
+        return true;
+    }
+}
+
+// The vac must never take in (or hold) something this game does not own: the tank would be filled
+// here while the actor lives on for everyone else, which duplicated slimes. So own it first, and
+// leave it alone if another player just grabbed it.
+[HarmonyPatch(typeof(VacuumItem), nameof(VacuumItem.ConsumeVacuumable))]
+internal static class OnVacConsume
+{
+    public static bool Prefix([HarmonyArgument(0)] GameObject gameObject)
+    {
+        try
+        {
+            if (!gameObject || (!Main.Server.IsRunning && !Main.Client.IsConnected))
+                return true;
+
+            var networkActor = gameObject.GetComponentInParent<NetworkActor>();
+            if (!networkActor || networkActor.LocallyOwned)
+                return true;
+
+            if (networkActor.RecentlyClaimedByOtherPlayer)
+                return false;
+
+            // Still loading the host's world: nothing may be taken yet.
+            if (!NetworkActorManager.CanSendActorChanges)
+                return false;
+
+            if (networkActor.ActorId.Value == 0)
+                return true;
+
+            return OnActorVacced.Claim(networkActor);
+        }
+        catch (Exception exception)
+        {
+            SrLogger.LogDebug($"OnVacConsume failed: {exception.Message}");
+            return true;
+        }
     }
 }
 

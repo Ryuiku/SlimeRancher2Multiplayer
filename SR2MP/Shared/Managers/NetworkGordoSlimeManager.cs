@@ -7,7 +7,18 @@ internal static class NetworkGordoSlimeManager
     private static readonly HashSet<string> PoppedGordoSlimeIds = new();
     private static readonly HashSet<string> RewardsGivenIds = new();
 
+    // The value the game itself stores as a gordo's eaten count once it has burst (GordoModel.HasPopped).
+    internal const int PoppedEatenCount = -1;
+
     internal static void MarkPopped(string id) => PoppedGordoSlimeIds.Add(id);
+
+    // These sets describe one world. Without clearing them, gordos popped in one session stayed hidden
+    // and gave no rewards in the next world joined or hosted in the same game run.
+    internal static void Reset()
+    {
+        PoppedGordoSlimeIds.Clear();
+        RewardsGivenIds.Clear();
+    }
 
     internal static bool HasGivenRewards(string id) => RewardsGivenIds.Contains(id);
 

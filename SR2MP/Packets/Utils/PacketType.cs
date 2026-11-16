@@ -108,6 +108,8 @@ internal enum PacketType : byte
     InitialTeleporterLinks = 113, // Server -> Client                             Low (depends on join)                 Initial teleporter links on join
     TornadoSpawn = 114,           // Server -> All Clients                        Low (depends on tornado count)        Host tornado spawn/despawn broadcast
     GordoSlimeReward = 115,       // Both Ways                                    Low                                   On a Gordo Slime's reward spawn
+    Blueprints = 117,             // Both Ways                                    Low (manual)                          Gadget blueprints unlocked (on unlock, and all of them on join)
+    InitialActorOwners = 118,     // Server -> Client                             Low (depends on join)                 Who simulates which actor, sent just before the initial actors
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

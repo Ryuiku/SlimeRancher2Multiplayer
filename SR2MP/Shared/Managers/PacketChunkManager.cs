@@ -71,7 +71,13 @@ internal static class PacketChunkManager
 
     private static readonly ConcurrentDictionary<PacketKey, IncompletePacket> IncompletePackets = new();
 
-    private static int nextPacketId = 1;
+    // One id counter per destination and packet type. With a single shared counter, busy sessions
+    // went through all 65535 ids in well under the 30s duplicate window, so the receiver dropped real
+    // packets (spawns, ownership handoffs, state changes) as "duplicates" of unrelated ones, while
+    // still acknowledging them. The receiver tells packets apart by sender, type and id, so each
+    // destination can have its own numbering. Never reset: a player who reconnects from the same
+    // address must not see ids repeat.
+    private static readonly ConcurrentDictionary<IPEndPoint, int[]> NextPacketIds = new();
 
     private const int MaxChunkBytes = 512 - HeaderSize;
     private const int CompressionThreshold = 64;
@@ -111,11 +117,18 @@ internal static class PacketChunkManager
         var packet = IncompletePackets.GetOrAdd(key, _ =>
             IncompletePacket.Borrow(totalChunks, reliability, channel, sequenceNumber));
 
-        if (packet.TotalChunks != totalChunks)
+        // Leftovers of an older packet that happened to have the same id: start over with this chunk
+        // (which was already acknowledged) instead of dropping it or mixing the two packets.
+        if (packet.TotalChunks != totalChunks || DateTime.UtcNow - packet.LastChunkTime > PacketTimeout)
         {
-            SrLogger.LogWarning($"Chunk count mismatch for {key}: expected={packet.TotalChunks} got={totalChunks}");
-            IncompletePackets.TryRemove(key, out _);
-            return false;
+            if (packet.TotalChunks != totalChunks)
+                SrLogger.LogWarning($"Chunk count mismatch for {key}: expected={packet.TotalChunks} got={totalChunks}");
+
+            if (IncompletePackets.TryRemove(key, out var stale))
+                Discard(stale);
+
+            packet = IncompletePackets.GetOrAdd(key, _ =>
+                IncompletePacket.Borrow(totalChunks, reliability, channel, sequenceNumber));
         }
 
         // Store chunks
@@ -179,21 +192,18 @@ internal static class PacketChunkManager
     }
 
     internal static SplitResult SplitPacket(ReadOnlySpan<byte> data, PacketReliability reliability,
-        NetworkChannel channel, ushort sequenceNumber, out ushort packetId)
+        NetworkChannel channel, ushort sequenceNumber, IPEndPoint destination, out ushort packetId)
     {
         var packetType = data[0];
 
-        // Thread-safe packet ID generation
-        var id = Interlocked.Increment(ref nextPacketId);
+        // Thread-safe packet ID generation, wrapping around the ushort range and skipping 0
+        var counters = NextPacketIds.GetOrAdd(destination, static _ => new int[256]);
+        ref var counter = ref counters[packetType];
 
-        // Reset to 1 if we've exceeded ushort range
-        if (id > ushort.MaxValue)
-        {
-            Interlocked.CompareExchange(ref nextPacketId, 1, id);
-            id = Interlocked.Increment(ref nextPacketId);
-        }
+        packetId = unchecked((ushort)Interlocked.Increment(ref counter));
+        if (packetId == 0)
+            packetId = unchecked((ushort)Interlocked.Increment(ref counter));
 
-        packetId = (ushort)id;
         PacketWriter? compressionWriter = null;
         var sourceToSplit = data;
 
@@ -291,19 +301,25 @@ internal static class PacketChunkManager
 
             SrLogger.LogWarning($"Timeout: {key.PacketType} from {key.EndPoint} ({packet.ReceivedCount}/{packet.TotalChunks} chunks)");
 
-            for (var c = 0; c < packet.TotalChunks; c++)
-            {
-                if (!packet.Received![c] || packet.Chunks?[c] == null)
-                    continue;
-
-                ArrayPool<byte>.Shared.Return(packet.Chunks![c]!);
-                packet.Chunks[c] = null!;
-            }
-
-            IncompletePacket.Return(packet);
+            Discard(packet);
         }
 
         ArrayPool<PacketKey>.Shared.Return(keysToRemove);
+    }
+
+    // Hands back the chunks received so far of a packet that will never be completed.
+    private static void Discard(IncompletePacket packet)
+    {
+        for (var c = 0; c < packet.TotalChunks; c++)
+        {
+            if (!packet.Received![c] || packet.Chunks?[c] == null)
+                continue;
+
+            ArrayPool<byte>.Shared.Return(packet.Chunks![c]!);
+            packet.Chunks[c] = null!;
+        }
+
+        IncompletePacket.Return(packet);
     }
 
     private static void Compress(ReadOnlySpan<byte> data, PacketWriter targetWriter)

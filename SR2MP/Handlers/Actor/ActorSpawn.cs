@@ -12,6 +12,19 @@ internal sealed class ActorSpawnHandler : BasePacketHandler<ActorSpawnPacket>
 {
     protected override bool Handle(ActorSpawnPacket packet, IPEndPoint? _)
     {
+        // While this game is loading a zone the spawn is applied afterwards. It is still passed on
+        // to the other players right away.
+        if (NetworkActorManager.DeferDuringSceneLoad(() => Apply(packet)))
+        {
+            NetworkActorManager.RememberOwner(packet.ActorId.Value, packet.OwnerId);
+            return true;
+        }
+
+        return Apply(packet);
+    }
+
+    private static bool Apply(ActorSpawnPacket packet)
+    {
         if (ActorManager.Actors.ContainsKey(packet.ActorId.Value))
         {
             SrLogger.LogDebug($"Actor {packet.ActorId.Value} already exists");
@@ -22,6 +35,8 @@ internal sealed class ActorSpawnHandler : BasePacketHandler<ActorSpawnPacket>
             packet.ActorId, packet.Position, packet.Rotation, packet.ActorType, packet.SceneGroup, out var actor,
             packet.FirstAppearance, packet.SecondAppearance, packet.Emotions, packet.Sleeping,
             packet.SpawnType == (byte)ActorSpawnType.Gadget ? packet.ChargeupTime : 0);
+
+        NetworkActorManager.RememberOwner(packet.ActorId.Value, packet.OwnerId);
 
         if (actor == null)
             return true;

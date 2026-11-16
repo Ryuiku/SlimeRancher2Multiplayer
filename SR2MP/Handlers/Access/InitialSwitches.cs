@@ -14,8 +14,18 @@ internal sealed class InitialSwitchesHandler : BasePacketHandler<InitialSwitches
     {
         var gameModel = GameState;
 
+        var hostIds = new HashSet<string>();
+        foreach (var worldSwitch in packet.Switches)
+            hostIds.Add(worldSwitch.ID);
+
+        SR2MP.Shared.Utils.HostWorldState.DropEntriesHostLacks(
+            gameModel.switches, hostIds, m => m.gameObj, "switches");
+
         foreach (var worldSwitch in packet.Switches)
         {
+            // One switch failing must not stop every switch after it from loading.
+            try
+            {
             if (gameModel.switches.TryGetValue(worldSwitch.ID, out var switchModel))
             {
                 switchModel.state = worldSwitch.State;
@@ -25,6 +35,7 @@ internal sealed class InitialSwitchesHandler : BasePacketHandler<InitialSwitches
 
                 var switchComponentBase = switchModel.gameObj.GetComponent<WorldSwitchModel.Participant>();
 
+                HandlingPacket = true;
                 switchComponentBase.SetModel(switchModel);
 
                 var primary = switchComponentBase.TryCast<WorldStatePrimarySwitch>();
@@ -46,6 +57,15 @@ internal sealed class InitialSwitchesHandler : BasePacketHandler<InitialSwitches
                 };
 
                 gameModel.switches.Add(worldSwitch.ID, switchModel);
+            }
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not load switch {worldSwitch.ID}: {ex.Message}");
+            }
+            finally
+            {
+                HandlingPacket = false;
             }
         }
 

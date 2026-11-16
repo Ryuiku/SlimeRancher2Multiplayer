@@ -11,16 +11,46 @@ internal sealed class ActorUpdateHandler : BasePacketHandler<ActorUpdatePacket>
 {
     protected override bool Handle(ActorUpdatePacket packet, IPEndPoint? _)
     {
+        // The host passes position updates on even when it can't use them itself. It used to drop
+        // them whenever the actor's zone wasn't loaded on the host, so two players exploring together
+        // away from the host never saw each other's slimes move, and kept taking them from each other.
         if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model))
-            return false;
+        {
+            // Not loaded here. Still remember where it is, so it shows up in the right place when
+            // this player reaches its zone.
+            try
+            {
+                if (GameState.TryGetIdentifiableModel(packet.ActorId, out var unloaded)
+                    && unloaded.ident != null && !unloaded.ident.IsPlayer)
+                {
+                    var unloadedActor = unloaded.TryCast<ActorModel>();
+                    if (unloadedActor != null)
+                    {
+                        unloadedActor.lastPosition = packet.Position;
+                        unloadedActor.lastRotation = packet.Rotation;
+                    }
+                }
+            }
+            catch
+            {
+                // ignored
+            }
 
-        var actor = model.Cast<ActorModel>();
+            return true;
+        }
+
+        var actor = model.TryCast<ActorModel>();
+        if (actor == null)
+            return true;
+
+        if (actor.ident != null && actor.ident.IsPlayer)
+            return false;
 
         actor.lastPosition = packet.Position;
         actor.lastRotation = packet.Rotation;
 
         if (!actor.TryGetNetworkComponent(out var networkComponent))
-            return false;
+            return true;
 
         networkComponent.OnNetworkWorldUpdate(packet);
 

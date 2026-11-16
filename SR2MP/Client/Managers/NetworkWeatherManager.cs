@@ -15,18 +15,28 @@ internal static class NetworkWeatherManager
     {
         get
         {
-            if (!director)
+            if (IsSceneDirector(director))
+                return director;
+
+            // Prefer the director that is actually in the loaded scene, not a prefab or leftover copy
+            // (those have no VFX control and throw when a weather state is stopped on them).
+            var all = Resources.FindObjectsOfTypeAll<WeatherDirector>();
+            var inScene = all.FirstOrDefault(IsSceneDirector);
+
+            if (inScene)
             {
-                // Prefer the director that is actually in the loaded scene, not a prefab or leftover copy
-                // (those have no VFX control and throw when a weather state is stopped on them).
-                var all = Resources.FindObjectsOfTypeAll<WeatherDirector>();
-                director = all.FirstOrDefault(d => d && d.gameObject.scene.IsValid() && d.gameObject.activeInHierarchy)
-                           ?? all.FirstOrDefault()!;
+                director = inScene!;
+                return director;
             }
 
-            return director;
+            // None in the scene right now (a zone is loading). Use whatever exists for this one
+            // update, but don't remember it, so the real one is picked up as soon as it is there.
+            return all.FirstOrDefault()!;
         }
     }
+
+    private static bool IsSceneDirector(WeatherDirector candidate)
+        => candidate && candidate.gameObject.scene.IsValid() && candidate.gameObject.activeInHierarchy;
 
     public static LightningStrike Lightning
     {
@@ -65,6 +75,22 @@ internal static class NetworkWeatherManager
         => GameContext.Instance.AutoSaveDirector._saveReferenceTranslation
             .GetPersistenceId(state.Cast<IWeatherState>());
 
+    // The first few problems go to the normal log so a tester's log shows them, the rest only to debug.
+    private static int loggedWeatherProblems;
+
+    private static void LogWeatherProblem(string message)
+    {
+        if (loggedWeatherProblems < 5)
+        {
+            loggedWeatherProblems++;
+            SrLogger.LogWarning(message);
+        }
+        else
+        {
+            SrLogger.LogDebug(message);
+        }
+    }
+
     internal static void Apply(WeatherPacket packet, bool immediate)
     {
         if (SceneContext.Instance.WeatherRegistry == null)
@@ -101,15 +127,15 @@ internal static class NetworkWeatherManager
 
                 foreach (var forecast in forecastCopy)
                 {
-                    var patternInstance = registry.GetWeatherPatternInstance(
-                        zoneKey,
-                        forecast.Pattern
-                    );
-
                     // One weather state failing to stop must not abort the whole update,
                     // or weather stays out of sync for the rest of the session.
                     try
                     {
+                        var patternInstance = registry.GetWeatherPatternInstance(
+                            zoneKey,
+                            forecast.Pattern
+                        );
+
                         if (patternInstance == null)
                         {
                             localDirector.StopState(
@@ -128,26 +154,43 @@ internal static class NetworkWeatherManager
                     }
                     catch (Exception ex)
                     {
-                        SrLogger.LogDebug($"Weather: could not stop a state in {zoneKey.name}: {ex.Message}");
+                        LogWeatherProblem($"Weather: could not stop a state in {zoneKey.name}: {ex.Message}");
+                    }
+                }
+
+                // Build the new forecast before touching the old one, so one bad entry can't leave
+                // the zone with no weather at all.
+                var newEntries = new List<WeatherModel.ForecastEntry>();
+
+                foreach (var forecast in data.WeatherForecasts)
+                {
+                    try
+                    {
+                        if (forecast.State == null)
+                            continue;
+
+                        var pattern = WeatherUpdateHelper.GetPatternForZoneAndState(zoneKey, forecast.State.name);
+
+                        newEntries.Add(new WeatherModel.ForecastEntry
+                        {
+                            State = forecast.State.Cast<IWeatherState>(),
+                            Pattern = pattern,
+                            Started = forecast.WeatherStarted,
+                            StartTime = forecast.StartTime,
+                            EndTime = forecast.EndTime
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        LogWeatherProblem($"Weather: skipped a forecast entry in {zoneKey.name}: {ex.Message}");
                     }
                 }
 
                 zone.Forecast.Clear();
                 zone.Parameters.WindDirection = data.WindSpeed;
 
-                foreach (var forecast in data.WeatherForecasts)
-                {
-                    var pattern = WeatherUpdateHelper.GetPatternForZoneAndState(zoneKey, forecast.State.name);
-
-                    zone.Forecast.Add(new WeatherModel.ForecastEntry
-                    {
-                        State = forecast.State.Cast<IWeatherState>(),
-                        Pattern = pattern,
-                        Started = forecast.WeatherStarted,
-                        StartTime = forecast.StartTime,
-                        EndTime = forecast.EndTime
-                    });
-                }
+                foreach (var entry in newEntries)
+                    zone.Forecast.Add(entry);
             }
 
             if (!registry._zones.TryGetValue(localDirector.Zone, out var activeZone))
@@ -159,13 +202,13 @@ internal static class NetworkWeatherManager
 
             foreach (var forecast in activeCopy)
             {
-                var patternInstance = registry.GetWeatherPatternInstance(
-                    localDirector.Zone,
-                    forecast.Pattern
-                );
-
                 try
                 {
+                    var patternInstance = registry.GetWeatherPatternInstance(
+                        localDirector.Zone,
+                        forecast.Pattern
+                    );
+
                     if (patternInstance == null)
                     {
                         localDirector.RunState(forecast.State.Cast<IWeatherState>(), activeZone.Parameters, immediate);
@@ -182,7 +225,7 @@ internal static class NetworkWeatherManager
                 }
                 catch (Exception ex)
                 {
-                    SrLogger.LogDebug($"Weather: could not start a state: {ex.Message}");
+                    LogWeatherProblem($"Weather: could not start a state: {ex.Message}");
                 }
             }
 

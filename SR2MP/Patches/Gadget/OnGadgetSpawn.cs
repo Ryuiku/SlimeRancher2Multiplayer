@@ -22,7 +22,18 @@ internal static class OnGadgetSpawn
         if (!result)
             yield break;
 
+        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+            yield break;
+
+        // A joining player's own gadgets are replaced by the host's world; announcing them first
+        // would put ids from this player's save into everyone else's game.
+        if (!NetworkActorManager.CanSendActorChanges)
+            yield break;
+
         var gadget = result.GetComponent<Il2CppMonomiPark.SlimeRancher.World.Gadget>();
+        if (!gadget)
+            yield break;
+
         var type = NetworkActorManager.GetPersistentID(gadget.identType);
 
         GadgetModel? model = null;
@@ -53,7 +64,7 @@ internal static class OnGadgetSpawn
         Vector3 position,
         Quaternion rotation)
     {
-        if (!HandlingPacket)
+        if (!HandlingPacket && __result)
             StartCoroutine(SpawnOverNetwork(__result, sceneGroup, position, rotation));
     }
 }

@@ -36,7 +36,20 @@ internal sealed class ConnectionApproveHandler : BasePacketHandler<ConnectionApp
 
             // todo: resync players too
             foreach (var (id, username) in packet.OtherPlayers)
-                SpawnPlayer(id, username);
+            {
+                // After a rejoin the host can still list this player's old entry.
+                if (id == packet.PlayerId || id == LocalID)
+                    continue;
+
+                try
+                {
+                    SpawnPlayer(id, username);
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogWarning($"Could not create the avatar for player {id}: {ex.Message}");
+                }
+            }
 
             StartCoroutine(WarnIfWorldNotLoaded());
         }
@@ -83,6 +96,13 @@ internal sealed class ConnectionApproveHandler : BasePacketHandler<ConnectionApp
 
     private static void SpawnPlayer(string id, string name)
     {
+        if (PlayerObjects.TryGetValue(id, out var stale))
+        {
+            if (stale)
+                Object.Destroy(stale);
+            PlayerObjects.Remove(id);
+        }
+
         var playerObject = Object.Instantiate(PlayerPrefab).GetComponent<NetworkPlayer>();
         playerObject.gameObject.SetActive(true);
         playerObject.ID = id;

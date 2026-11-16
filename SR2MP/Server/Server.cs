@@ -94,6 +94,9 @@ public sealed class SR2MPServer
             NetworkManager.Start(port, enableIPv6);
             Port = port;
             timeoutTimer = new Timer(CheckClientTimeouts, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            SR2MP.Shared.Managers.NetworkGordoSlimeManager.Reset();
+            SR2MP.Shared.Managers.NetworkActorManager.KnownOwners.Clear();
+            SR2MP.Shared.Managers.NetworkActorManager.ClearDeferredWorldChanges();
             InvokeServerStarted();
             MultiplayerUI.Instance.RegisterSystemMessage(
                 "The world is now open to others!",
@@ -161,7 +164,13 @@ public sealed class SR2MPServer
         var playerId = client.PlayerId;
         
         var player = PlayerManager.GetPlayer(playerId);
-        if (player == null) return;
+        if (player == null)
+        {
+            // A player who left on purpose was already removed by the leave handler. Their slimes,
+            // drones and gardens still need a new owner, which used to happen only after a timeout.
+            ReassignOwnerlessActors();
+            return;
+        }
 
         PlayerManager.RemovePlayer(playerId);
 
@@ -198,11 +207,23 @@ public sealed class SR2MPServer
             MultiplayerUI.SystemMessageDisconnect
         );
         
+        ReassignOwnerlessActors();
+    }
+
+    private static void ReassignOwnerlessActors()
+    {
         MainThreadDispatcher.Instance.Enqueue(() =>
         {
-            ActorManager.AssignOwnershipOfUnowned();
-            NetworkDroneManager.AssignOwnershipOfUnowned();
-            NetworkGardenManager.AssignOwnershipOfUnowned();
+            try
+            {
+                ActorManager.AssignOwnershipOfUnowned();
+                NetworkDroneManager.AssignOwnershipOfUnowned();
+                NetworkGardenManager.AssignOwnershipOfUnowned();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not reassign actors after a player left: {ex.Message}");
+            }
         });
     }
 
@@ -257,6 +278,26 @@ public sealed class SR2MPServer
             ClientManager.Clear();
             PlayerManager.Clear();
             NetworkManager.Stop();
+
+            // Actors the other players were simulating are frozen here, and nobody will move them now.
+            try
+            {
+                ActorManager.ReleaseAllToLocal();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not take actors back after closing the server: {ex.Message}");
+            }
+
+            // Gardens another player was growing are switched off here; switch them back on.
+            try
+            {
+                SR2MP.Shared.Managers.NetworkGardenManager.OnDisconnected();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not reset gardens after closing the server: {ex.Message}");
+            }
             NetworkStringPool.Clear();
             ApiHandlers.ClearNetIds();
 

@@ -10,7 +10,13 @@ internal sealed class AutoFeederSpeedHandler : BasePacketHandler<AutoFeederSpeed
 {
     protected override bool Handle(AutoFeederSpeedPacket packet, IPEndPoint? _)
     {
-        if (!GameState.landPlots.TryGetValue(packet.ID, out var model) || !model.gameObj)
+        if (!GameState.landPlots.TryGetValue(packet.ID, out var model))
+            return true;
+
+        // Recorded even when the corral is not loaded here, so it is right when this player gets back.
+        model.feederCycleSpeed = packet.Speed;
+
+        if (!model.gameObj)
             return true;
 
         var feeder = model.gameObj.GetComponentInChildren<SlimeFeeder>();

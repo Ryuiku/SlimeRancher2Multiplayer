@@ -167,21 +167,43 @@ internal sealed partial class NetworkActorManager
         sprinkle.SetMaterial((int)material);
     }
 
-    internal static void ApplyOwnership(ActorTransferPacket packet)
+    // Two players claiming the same actor at the same moment (both vacuuming it, say): each one's
+    // claim reaches the other after they made their own, so each believes the other has it and
+    // nobody moves it. Claims that cross inside this window are settled by player id instead.
+    private const float ClaimConflictWindow = 0.5f;
+
+    /// <summary>
+    /// Applies an ownership change. Returns false if it was refused because we claimed the same
+    /// actor at the same moment and win the tie (our claim is sent again, so everyone agrees).
+    /// </summary>
+    internal static bool ApplyOwnership(ActorTransferPacket packet)
     {
-        if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var actor))
-            return;
-
-        if (!actor.TryGetNetworkComponent(out var component))
-            return;
-        
-        component.CurrentOwnerId = packet.OwnerId;
-
         var locallyOwned = packet.OwnerId == LocalID;
+
+        if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var actor)
+            || !actor.TryGetNetworkComponent(out var component))
+        {
+            // Not loaded here. Remember it for when it is.
+            RememberOwner(packet.ActorId.Value, packet.OwnerId);
+            return true;
+        }
+
+        if (!locallyOwned
+            && component.LocallyOwned
+            && CanSendActorChanges
+            && UnityEngine.Time.time - component.LastLocalClaimTime < ClaimConflictWindow
+            && string.CompareOrdinal(LocalID, packet.OwnerId) < 0)
+        {
+            Main.SendToAllOrServer(new ActorTransferPacket { ActorId = packet.ActorId, OwnerId = LocalID });
+            return false;
+        }
+
+        RememberOwner(packet.ActorId.Value, packet.OwnerId);
+        component.CurrentOwnerId = packet.OwnerId;
 
         if (!locallyOwned)
         {
-            component.LastRemoteClaimTime = UnityEngine.Time.time;
+            component.NoteRemoteClaim();
 
             try
             {
@@ -207,8 +229,13 @@ internal sealed partial class NetworkActorManager
                 SrLogger.LogDebug($"Failed to release actor from vacuum on ownership change: {exception.Message}");
             }
         }
+        else if (!component.LocallyOwned)
+        {
+            component.LastLocalClaimTime = UnityEngine.Time.time;
+        }
 
         component.LocallyOwned = locallyOwned;
+        return true;
     }
     
     private static bool FreeActorIdForGadget(ActorId actorId, IdentifiableType incomingType)

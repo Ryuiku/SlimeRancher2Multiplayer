@@ -8,8 +8,30 @@ namespace SR2MP.Patches.GordoSlime;
 [HarmonyPatch(typeof(GordoEat), nameof(GordoEat.DoEat))]
 internal static class OnGordoSlimeFed
 {
-    public static void Postfix(GordoEat __instance)
+    // Every machine that has the gordo loaded has its own copy of the food, and each copy used to
+    // feed the gordo and report the new count. Only the machine that simulates the food feeds it.
+    public static bool Prefix(GameObject obj, out bool __state)
     {
+        __state = true;
+
+        if (HandlingPacket || (!Main.Server.IsRunning && !Main.Client.IsConnected))
+            return true;
+
+        var networkActor = obj ? obj.GetComponent<SR2MP.Components.Actor.NetworkActor>() : null;
+        if (networkActor != null && !networkActor.LocallyOwned)
+        {
+            __state = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    public static void Postfix(GordoEat __instance, bool __state)
+    {
+        if (!__state)
+            return;
+
         var packet = new GordoSlimeFeedPacket
         {
             ID = __instance.Id,

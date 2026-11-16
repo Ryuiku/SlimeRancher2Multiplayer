@@ -72,34 +72,45 @@ public static class JoinCode
     }
 
     /// <summary>
-    /// True if one of this machine's network adapters is on the same subnet as the given LAN address.
+    /// True if this machine's own network (the one it reaches the internet through) is the same
+    /// subnet as the given LAN address. Other adapters (VPNs, virtual machines) are ignored: they
+    /// often use the same address ranges as somebody's home network without being it.
     /// </summary>
     public static bool IsOnSameLan(IPAddress lanAddress)
     {
         try
         {
-            var target = lanAddress.GetAddressBytes();
+            var localAddress = GetLocalLanAddress();
+            if (localAddress == null)
+                return false;
+
+            var mask = new byte[] { 255, 255, 255, 0 };
 
             foreach (var unicast in GetUsableIpv4Addresses())
             {
-                var mask = unicast.IPv4Mask?.GetAddressBytes();
-                if (mask == null || mask.Length != 4 || mask.All(b => b == 0))
-                    mask = new byte[] { 255, 255, 255, 0 };
+                if (!unicast.Address.Equals(localAddress))
+                    continue;
 
-                var local = unicast.Address.GetAddressBytes();
-                var same = true;
-                for (var i = 0; i < 4; i++)
-                {
-                    if ((local[i] & mask[i]) != (target[i] & mask[i]))
-                    {
-                        same = false;
-                        break;
-                    }
-                }
+                var adapterMask = unicast.IPv4Mask?.GetAddressBytes();
+                if (adapterMask != null && adapterMask.Length == 4 && adapterMask.Any(b => b != 0))
+                    mask = adapterMask;
 
-                if (same)
-                    return true;
+                break;
             }
+
+            var local = localAddress.GetAddressBytes();
+            var target = lanAddress.GetAddressBytes();
+
+            if (local.Length != 4 || target.Length != 4)
+                return false;
+
+            for (var i = 0; i < 4; i++)
+            {
+                if ((local[i] & mask[i]) != (target[i] & mask[i]))
+                    return false;
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
@@ -111,9 +122,25 @@ public static class JoinCode
 
     private static IPAddress? GetLocalLanAddress()
     {
+        // Ask the system which address it would use to reach the internet. That is the address this
+        // machine has on the router's network, whatever range the router hands out (some home
+        // routers use ranges outside the usual 192.168.x.x / 10.x.x.x). Nothing is sent.
         try
         {
-            // Prefer the adapter that has a default gateway (the one actually connected to the router).
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.Connect(new IPEndPoint(new IPAddress(new byte[] { 1, 1, 1, 1 }), 9));
+
+            if (socket.LocalEndPoint is IPEndPoint local && IsLanCandidate(local.Address))
+                return local.Address;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not ask the system for a LAN address: {ex.Message}");
+        }
+
+        try
+        {
+            // Otherwise prefer the adapter that has a default gateway (the one actually connected to the router).
             IPAddress? fallback = null;
 
             foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
@@ -127,13 +154,14 @@ public static class JoinCode
 
                 foreach (var unicast in properties.UnicastAddresses)
                 {
-                    if (unicast.Address.AddressFamily != AddressFamily.InterNetwork || !IsPrivate(unicast.Address))
+                    if (!IsLanCandidate(unicast.Address))
                         continue;
 
                     if (hasGateway)
                         return unicast.Address;
 
-                    fallback ??= unicast.Address;
+                    if (IsPrivate(unicast.Address))
+                        fallback ??= unicast.Address;
                 }
             }
 
@@ -150,12 +178,25 @@ public static class JoinCode
         NetworkInterface.GetAllNetworkInterfaces()
             .Where(IsUsableAdapter)
             .SelectMany(a => a.GetIPProperties().UnicastAddresses)
-            .Where(u => u.Address.AddressFamily == AddressFamily.InterNetwork && IsPrivate(u.Address));
+            .Where(u => IsLanCandidate(u.Address));
 
     private static bool IsUsableAdapter(NetworkInterface adapter) =>
         adapter.OperationalStatus == OperationalStatus.Up
         && adapter.NetworkInterfaceType != NetworkInterfaceType.Loopback
         && adapter.NetworkInterfaceType != NetworkInterfaceType.Tunnel;
+
+    /// <summary>
+    /// An IPv4 address that could be this machine's address on a home network: not loopback,
+    /// not "no address", and not the 169.254.x.x range Windows uses when it got no address at all.
+    /// </summary>
+    private static bool IsLanCandidate(IPAddress address)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork)
+            return false;
+
+        var b = address.GetAddressBytes();
+        return b[0] != 0 && b[0] != 127 && !(b[0] == 169 && b[1] == 254) && b[0] < 224;
+    }
 
     private static bool IsPrivate(IPAddress address)
     {

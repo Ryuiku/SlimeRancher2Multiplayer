@@ -11,19 +11,42 @@ internal sealed class PrismaBarrierHandler : BasePacketHandler<PrismaBarrierPack
 {
     protected override bool Handle(PrismaBarrierPacket packet, IPEndPoint? _)
     {
-        if (GameState.AllPrismaBarriers().TryGetValue(packet.ID, out var model))
+        HandlingPacket = true;
+        try
         {
-            HandlingPacket = true;
-            model.ActivationTime = packet.ActivationTime;
-            model.NotifyParticipants();
-            if (model._gameObj)
+            var barriers = GameState.AllPrismaBarriers();
+            if (barriers.TryGetValue(packet.ID, out var model) && model != null)
             {
-                var barrier = model._gameObj.GetComponent<PrismaBarrier>();
-                if (barrier)
-                    barrier.SetActivationTime(packet.ActivationTime);
+                model.ActivationTime = packet.ActivationTime;
+
+                if (model._gameObj)
+                {
+                    model.NotifyParticipants();
+
+                    var barrier = model._gameObj.GetComponent<PrismaBarrier>();
+                    if (barrier)
+                        barrier.SetActivationTime(packet.ActivationTime);
+                }
             }
+            else
+            {
+                // Not known here yet (area never loaded): record it, as the join packet does.
+                barriers[packet.ID] = new Il2CppMonomiPark.SlimeRancher.DataModel.PrismaBarrierModel(packet.ID)
+                {
+                    _gameObj = null,
+                    ActivationTime = packet.ActivationTime
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not apply prisma barrier {packet.ID}: {ex.Message}");
+        }
+        finally
+        {
             HandlingPacket = false;
         }
+
         return true;
     }
 }

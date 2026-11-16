@@ -13,11 +13,21 @@ internal sealed class AmmoDecrementHandler : BasePacketHandler<AmmoDecrementPack
     {
         var ammo = NetworkAmmoManager.GetAmmo(packet.ID);
 
-        if (ammo == null) return false;
+        // Not loaded on this machine. The host still passes it on: the other players may have it.
+        if (ammo == null) return true;
+
+        if (packet.SlotIndex < 0 || ammo.Slots == null || packet.SlotIndex >= ammo.Slots.Count)
+            return true;
 
         HandlingPacket = true;
-        ammo.Decrement(packet.SlotIndex, packet.Count);
-        HandlingPacket = false;
+        try
+        {
+            ammo.Decrement(packet.SlotIndex, packet.Count);
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         return true;
     }

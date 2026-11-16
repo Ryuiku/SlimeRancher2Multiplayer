@@ -136,7 +136,11 @@ internal sealed class ActorsLoadHandler : BasePacketHandler<InitialActorsPacket>
     private static void SpawnInitialActors(InitialActorsPacket packet)
     {
         GameState._actorIdProvider._nextActorId = packet.StartingActorID;
-        GameState.world.worldTime = packet.WorldTime;
+        // Not backwards while this player is asleep or knocked out: the game keeps them frozen
+        // until the clock reaches the wake-up time.
+        if (packet.WorldTime >= GameState.world.worldTime
+            || !SR2MP.Components.UI.MultiplayerUI.IsLocalPlayerLocked(out _))
+            GameState.world.worldTime = packet.WorldTime;
 
         foreach (var actor in packet.Actors)
         {

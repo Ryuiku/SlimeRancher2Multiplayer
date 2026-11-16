@@ -46,6 +46,9 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             }
         }
 
+        // Actor spawns and destroys that were held back while a zone was loading
+        SR2MP.Shared.Managers.NetworkActorManager.RunDeferredWorldChanges();
+
         // Process client packets
         while (clientPacketQueue.TryDequeue(out var clientCache))
         {
@@ -91,6 +94,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
 
     [HideFromIl2Cpp]
     public void Enqueue(in ServerHandleCache cache) => serverPacketQueue.Enqueue(cache);
+
+    /// <summary>
+    /// Throws away client packets that were received but not handled yet. Main thread only.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void DropClientPackets()
+    {
+        while (clientPacketQueue.TryDequeue(out var cache))
+            PacketReader.Return(cache.Reader);
+    }
 
     public void OnDestroy()
     {

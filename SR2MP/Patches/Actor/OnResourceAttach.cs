@@ -12,6 +12,7 @@ internal static class ResourceCycleAttachPatch
     {
         if (HandlingPacket) return;
         if (!Main.Server.IsRunning && !Main.Client.IsConnected) return;
+        if (!SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges) return;
         if (joint == null) return;
 
         var networkActor = __instance.GetComponent<NetworkActor>();
