@@ -82,7 +82,10 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         {
             try
             {
-                serverCache.Handler.Handle(serverCache.Reader, serverCache.ClientEp);
+                // A packet that was still on its way in when the server closed is thrown away:
+                // handled now, an ownership claim would freeze an actor nobody moves anymore.
+                if (Main.Server.IsRunning)
+                    serverCache.Handler.Handle(serverCache.Reader, serverCache.ClientEp);
             }
             catch (Exception ex)
             {

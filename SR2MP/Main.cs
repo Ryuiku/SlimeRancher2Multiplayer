@@ -164,12 +164,37 @@ public sealed class Main : StarlightExpansionV01
 
     internal static void SendToAllOrServer<T>(T packet) where T : IPacket
     {
+        // A joining player is still in their own save until the host's world has been applied.
+        // What happens there must not reach the host: several packets carry absolute values (a
+        // refinery count, a plot's upgrades) and would overwrite the host's world with that save's.
+        if (!Server.IsRunning && Client.IsConnected
+            && !SR2MP.Shared.Managers.NetworkActorManager.InitialActorsLoaded
+            && !AllowedBeforeWorldLoaded(packet.Type))
+            return;
+
         if (Client.IsConnected)
             Client.SendPacket(packet);
 
         if (Server.IsRunning)
             Server.SendToAll(packet);
     }
+
+    private static bool AllowedBeforeWorldLoaded(SR2MP.Packets.Utils.PacketType type) => type is
+        SR2MP.Packets.Utils.PacketType.Connect or
+        SR2MP.Packets.Utils.PacketType.Heartbeat or
+        SR2MP.Packets.Utils.PacketType.ChatMessage or
+        SR2MP.Packets.Utils.PacketType.ResyncRequest or
+        SR2MP.Packets.Utils.PacketType.PlayerJoin or
+        SR2MP.Packets.Utils.PacketType.PlayerLeave or
+        SR2MP.Packets.Utils.PacketType.PlayerUpdate or
+        SR2MP.Packets.Utils.PacketType.PlayerFX or
+        SR2MP.Packets.Utils.PacketType.MovementSound or
+        SR2MP.Packets.Utils.PacketType.PlayerGadgetUpdate or
+        SR2MP.Packets.Utils.PacketType.CurrencyAdjust or
+        SR2MP.Packets.Utils.PacketType.ModSyncAck or
+        SR2MP.Packets.Utils.PacketType.ApiCall or
+        SR2MP.Packets.Utils.PacketType.ReservedAcknowledge or
+        SR2MP.Packets.Utils.PacketType.ReservedCompression;
 
     /// <inheritdoc/>
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)
@@ -224,6 +249,9 @@ public sealed class Main : StarlightExpansionV01
                 {
                     SrLogger.LogError($"Could not end the session at the main menu: {ex.Message}");
                 }
+
+                // The save is left: actor ids repeat in the next one.
+                SR2MP.Shared.Managers.NetworkActorManager.PendingRadiancy.Clear();
 
                 InitializePlayer("BeatrixMainMenu", 0.85f);
                 break;

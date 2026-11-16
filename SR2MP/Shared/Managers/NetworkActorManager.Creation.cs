@@ -66,7 +66,10 @@ internal sealed partial class NetworkActorManager
             }
         }
 
-        if (!gameObj && PendingRadiancy.TryGetValue(model.actorId.Value, out var pending))
+        // Also when the object exists: right after a zone load the game has built it from the plain
+        // model and the radiant look is only put on a moment later.
+        if (radiancy == ActorAppearanceType.Default
+            && PendingRadiancy.TryGetValue(model.actorId.Value, out var pending))
             radiancy = pending;
 
         return new InitialActorsPacket.Slime

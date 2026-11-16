@@ -354,11 +354,7 @@ internal sealed partial class NetworkActorManager
         }
     }
 
-    internal static void ClearDeferredWorldChanges()
-    {
-        DeferredWorldChanges.Clear();
-        PendingRadiancy.Clear();
-    }
+    internal static void ClearDeferredWorldChanges() => DeferredWorldChanges.Clear();
 
     internal static bool IsSceneLoadingNow => IsSceneLoading();
 

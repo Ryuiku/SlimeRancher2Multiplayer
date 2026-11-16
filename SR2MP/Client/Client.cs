@@ -161,6 +161,8 @@ public sealed class SR2MPClient
             NetworkActorManager.InitialActorsLoaded = false;
             NetworkActorManager.KnownOwners.Clear();
             NetworkActorManager.ClearDeferredWorldChanges();
+            // The world behind the actor ids is about to be replaced by the host's.
+            NetworkActorManager.PendingRadiancy.Clear();
             NetworkDroneManager.CachedOwners.Clear();
             NetworkDroneManager.PendingOwners.Clear();
             NetworkGordoSlimeManager.Reset();

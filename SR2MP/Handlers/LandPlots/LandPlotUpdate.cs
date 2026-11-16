@@ -58,7 +58,27 @@ internal sealed class NewLandPlotHandler : BasePacketHandler<NewLandPlotPacket>
 
                 // Storage is kept per kind, not per plot type, so the old silo, collector and
                 // feeder contents would show up again in a new plot of the same type.
-                model.siloAmmo?.Clear();
+                // The entries stay (a storage without slots breaks the plot for a joining player),
+                // only their contents go.
+                if (model.siloAmmo != null)
+                {
+                    foreach (var storage in model.siloAmmo)
+                    {
+                        var slots = storage.value?.Slots;
+                        if (slots == null)
+                            continue;
+
+                        foreach (var slot in slots)
+                        {
+                            if (slot == null)
+                                continue;
+
+                            slot._count = 0;
+                            slot._id = null;
+                        }
+                    }
+                }
+
                 model.ashUnits = 0f;
                 model.feederCycleSpeed = default;
             }
