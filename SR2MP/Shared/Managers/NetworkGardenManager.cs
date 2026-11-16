@@ -160,6 +160,11 @@ internal static class NetworkGardenManager
         if (PendingClaims.Count == 0)
             return;
 
+        // A joining player's packets are held back until the host's world is applied. The claims
+        // are kept for then: a claim is only made once, so a dropped one would be lost for good.
+        if (!Main.Server.IsRunning && Main.Client.IsConnected && !NetworkActorManager.InitialActorsLoaded)
+            return;
+
         var entries = new List<GardenOwnershipPacket.Entry>(PendingClaims.Count);
         foreach (var id in PendingClaims)
         {

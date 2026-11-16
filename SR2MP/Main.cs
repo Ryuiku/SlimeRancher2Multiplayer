@@ -190,7 +190,6 @@ public sealed class Main : StarlightExpansionV01
         SR2MP.Packets.Utils.PacketType.PlayerFX or
         SR2MP.Packets.Utils.PacketType.MovementSound or
         SR2MP.Packets.Utils.PacketType.PlayerGadgetUpdate or
-        SR2MP.Packets.Utils.PacketType.CurrencyAdjust or
         SR2MP.Packets.Utils.PacketType.ModSyncAck or
         SR2MP.Packets.Utils.PacketType.ApiCall or
         SR2MP.Packets.Utils.PacketType.ReservedAcknowledge or

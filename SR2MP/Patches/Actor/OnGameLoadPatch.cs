@@ -53,6 +53,31 @@ internal static class OnGameLoadPatch
             ActorManager.Actors[actor.value.actorId.Value] = actor.value;
         }
 
+        // Radiant looks noted in an earlier session of this world, for slimes whose zone was not
+        // loaded then and is now: put them on, so the host shows what joining players are told.
+        try
+        {
+            foreach (var pending in NetworkActorManager.PendingRadiancy.ToArray())
+            {
+                if (!GameState.TryGetIdentifiableModel(new ActorId(pending.Key), out var identModel) || identModel == null)
+                    continue;
+
+                var slime = identModel.TryCast<SlimeModel>();
+                if (slime == null)
+                {
+                    NetworkActorManager.PendingRadiancy.Remove(pending.Key);
+                    continue;
+                }
+
+                if (NetworkActorManager.ApplyRadiancy(slime, pending.Value))
+                    NetworkActorManager.PendingRadiancy.Remove(pending.Key);
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not restore radiant slimes: {ex.Message}");
+        }
+
         GameState._actorIdProvider._nextActorId =
             NetworkActorManager.GetHighestActorIdInRange(0, ActorIdOffset) + 10;
     }
