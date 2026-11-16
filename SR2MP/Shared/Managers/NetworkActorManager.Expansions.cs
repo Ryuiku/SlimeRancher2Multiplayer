@@ -181,6 +181,8 @@ internal sealed partial class NetworkActorManager
 
         if (!locallyOwned)
         {
+            component.LastRemoteClaimTime = UnityEngine.Time.time;
+
             try
             {
                 var player = SceneContext.Instance.Player;

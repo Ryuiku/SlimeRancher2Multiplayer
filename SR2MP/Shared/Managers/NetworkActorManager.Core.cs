@@ -172,6 +172,10 @@ internal sealed partial class NetworkActorManager
                 if (!actor.TryGetNetworkComponent(out var netActor))
                     continue;
 
+                // Never take an actor from another player who is actively simulating it (they may be carrying it).
+                if (!onlyUnownedSlimes && netActor.IsActivelyOwnedByOtherPlayer)
+                    continue;
+
                 if (onlyUnownedSlimes)
                 {
                     if (netActor.LocallyOwned)

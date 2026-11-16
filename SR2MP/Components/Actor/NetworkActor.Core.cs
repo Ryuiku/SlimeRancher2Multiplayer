@@ -40,6 +40,23 @@ internal sealed partial class NetworkActor : MonoBehaviour
 
     internal bool OwnerRecentlyHeard => UnityEngine.Time.time - lastOwnerHeardTime < ownerSilenceThreshold;
 
+    /// <summary>
+    /// True if another player who is still in the game owns this actor and has sent updates for it recently.
+    /// </summary>
+    internal bool IsActivelyOwnedByOtherPlayer =>
+        !LocallyOwned
+        && !string.IsNullOrEmpty(CurrentOwnerId)
+        && CurrentOwnerId != LocalID
+        && PlayerManager.CheckPlayerExists(CurrentOwnerId)
+        && OwnerRecentlyHeard;
+
+    /// <summary>
+    /// Time another player last claimed this actor (vacuumed or is holding it).
+    /// </summary>
+    internal float LastRemoteClaimTime = -1000f;
+
+    internal bool RecentlyClaimedByOtherPlayer => UnityEngine.Time.time - LastRemoteClaimTime < 2f;
+
     private void UpdateOwnerValidity() => lastOwnerHeardTime = UnityEngine.Time.time;
 
     private void ResetOwnerValidityTime()
@@ -203,6 +220,15 @@ internal sealed partial class NetworkActor : MonoBehaviour
 
             if (!NetworkActorManager.CanSendActorChanges)
                 yield break;
+
+            // When an actor wakes up near us (it came into our loaded area), only take it over if nobody
+            // else is actively simulating it. Taking it from a player who is carrying it pulled it
+            // out of their vac, and left it frozen for everyone else.
+            if (!hibernating && IsActivelyOwnedByOtherPlayer)
+            {
+                LocallyOwned = false;
+                yield break;
+            }
 
             LocallyOwned = !hibernating;
 
