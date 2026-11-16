@@ -42,11 +42,9 @@ internal sealed partial class MultiplayerUI
         if (!string.IsNullOrWhiteSpace(joinManualError))
             DrawText(joinManualError);
 
-        if (joinIpInput == "127.0.0.1" && !DevMode)
-        {
-            DrawText("Invalid IP. Must not be 127.0.0.1");
-            DrawText("If you are using PlayIt, You have to use the IP and port from the left side of the app.");
-        }
+        // 127.0.0.1 is allowed: it reaches a second copy of the game on this PC.
+        if (joinIpInput == "127.0.0.1")
+            DrawText("127.0.0.1 is this PC. For PlayIt, use the IP and port from the left side of the app.");
 
         if (joinIpInput.Length == 0)
             DrawText("Invalid IP. Must not be empty");

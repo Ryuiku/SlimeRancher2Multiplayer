@@ -31,6 +31,25 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         SrLogger.LogMessage("Main thread dispatcher initialized");
     }
 
+    /// <summary>
+    /// Keeps the game running while its window is not in front. A player who tabs out would
+    /// otherwise stop simulating the slimes their game is running, for everyone. Any thread.
+    /// </summary>
+    internal static void KeepRunningInBackground()
+    {
+        if (!Instance)
+            return;
+
+        Instance.Enqueue(() =>
+        {
+            if (!Application.runInBackground)
+            {
+                Application.runInBackground = true;
+                SrLogger.LogMessage("The game now keeps running while its window is in the background.");
+            }
+        });
+    }
+
     public void Update()
     {
         // Process general actions
