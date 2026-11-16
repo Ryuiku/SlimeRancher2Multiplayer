@@ -22,23 +22,28 @@ internal static class OnGadgetSpawn
         if (!result)
             yield break;
 
-        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+        var gadget = result.GetComponent<Il2CppMonomiPark.SlimeRancher.World.Gadget>();
+        if (!gadget)
             yield break;
+
+        GadgetModel? model = null;
+        if (GameState.identifiables.TryGetValue(gadget.GetActorId(), out var identModel))
+            model = identModel?.TryCast<GadgetModel>();
+
+        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+        {
+            // Nothing is sent outside a session, but the pair of a linked gadget is still noted:
+            // a host that placed warp depots before opening the world names their storage by it.
+            NetworkGadgetManager.BroadcastGadgetLink(model);
+            yield break;
+        }
 
         // A joining player's own gadgets are replaced by the host's world; announcing them first
         // would put ids from this player's save into everyone else's game.
         if (!NetworkActorManager.CanSendActorChanges)
             yield break;
 
-        var gadget = result.GetComponent<Il2CppMonomiPark.SlimeRancher.World.Gadget>();
-        if (!gadget)
-            yield break;
-
         var type = NetworkActorManager.GetPersistentID(gadget.identType);
-
-        GadgetModel? model = null;
-        if (GameState.identifiables.TryGetValue(gadget.GetActorId(), out var identModel))
-            model = identModel?.TryCast<GadgetModel>();
 
         var packet = new ActorSpawnPacket()
         {

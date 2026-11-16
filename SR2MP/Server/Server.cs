@@ -97,6 +97,7 @@ public sealed class SR2MPServer
             SR2MP.Shared.Managers.NetworkGordoSlimeManager.Reset();
             SR2MP.Shared.Managers.NetworkActorManager.KnownOwners.Clear();
             SR2MP.Shared.Managers.NetworkActorManager.ClearDeferredWorldChanges();
+            SR2MP.Shared.Managers.ReSyncManager.ClearPendingSyncs();
             SR2MP.Shared.Managers.NetworkDroneManager.CachedOwners.Clear();
             SR2MP.Shared.Managers.NetworkDroneManager.PendingOwners.Clear();
             InvokeServerStarted();
@@ -282,8 +283,14 @@ public sealed class SR2MPServer
             NetworkManager.Stop();
 
             // Actors the other players were simulating are frozen here, and nobody will move them now.
+            // Packets that arrived but were not handled yet are dropped first: an ownership claim
+            // handled after this would freeze its actor again, for good.
             try
             {
+                if (MainThreadDispatcher.Instance)
+                    MainThreadDispatcher.Instance.DropServerPackets();
+
+                SR2MP.Shared.Managers.ReSyncManager.ClearPendingSyncs();
                 ActorManager.ReleaseAllToLocal();
             }
             catch (Exception ex)

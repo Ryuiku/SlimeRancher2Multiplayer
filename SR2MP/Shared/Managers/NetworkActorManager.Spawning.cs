@@ -261,6 +261,12 @@ internal sealed partial class NetworkActorManager
         {
             // Still listed, so the host includes it when it sends its world to a joining or resyncing player.
             ActorManager.Actors[actorId.Value] = model;
+
+            if (actorData.Radiancy != (int)ActorAppearanceType.Default)
+                PendingRadiancy[actorId.Value] = (ActorAppearanceType)actorData.Radiancy;
+            else
+                PendingRadiancy.Remove(actorId.Value);
+
             return true;
         }
 
@@ -290,6 +296,7 @@ internal sealed partial class NetworkActorManager
         if (actorData.Radiancy != (int)ActorAppearanceType.Default)
             ApplyRadiancy(slime, (ActorAppearanceType)actorData.Radiancy);
         
+        PendingRadiancy.Remove(actorId.Value);
         StartCoroutine(EnsureSlimeAppearance(slime));
 
         return true;

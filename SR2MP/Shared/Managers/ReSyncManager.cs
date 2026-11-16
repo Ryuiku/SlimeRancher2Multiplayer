@@ -36,7 +36,67 @@ internal sealed class ReSyncManager
         cooldowns[endPoint.ToString()] = DateTime.UtcNow;
     }
 
+    // Joins and resyncs asked for while the host is loading a zone. Actor spawns and destroys are
+    // held back during a load (but already passed on to the other players), so a snapshot taken
+    // now would miss them: the asking player would keep things that are gone and lack new ones.
+    private static readonly List<(string PlayerId, IPEndPoint EndPoint)> PendingSyncs = new();
+    private static float pendingSyncsSince;
+    private const float MaxPendingSyncSeconds = 60f;
+
+    internal static void ClearPendingSyncs() => PendingSyncs.Clear();
+
+    /// <summary>
+    /// Sends the snapshots that waited for a zone load. Called every frame on the main thread.
+    /// </summary>
+    internal static void RunPendingSyncs()
+    {
+        if (PendingSyncs.Count == 0)
+            return;
+
+        if (NetworkActorManager.IsSceneLoadingNow
+            && UnityEngine.Time.realtimeSinceStartup - pendingSyncsSince < MaxPendingSyncSeconds)
+            return;
+
+        var waiting = PendingSyncs.ToArray();
+        PendingSyncs.Clear();
+
+        if (!Main.Server.IsRunning)
+            return;
+
+        NetworkActorManager.RunDeferredWorldChanges(true);
+
+        foreach (var (playerId, endPoint) in waiting)
+        {
+            try
+            {
+                if (Main.Server.ClientManager.TryGetClient(endPoint, out _))
+                    SendWorldTo(playerId, endPoint);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogError($"Could not send the world to {playerId}: {ex}");
+            }
+        }
+    }
+
     public static void SynchronizeClient(string playerId, IPEndPoint endPoint)
+    {
+        if (NetworkActorManager.IsSceneLoadingNow)
+        {
+            if (PendingSyncs.Count == 0)
+                pendingSyncsSince = UnityEngine.Time.realtimeSinceStartup;
+
+            PendingSyncs.RemoveAll(p => p.EndPoint.Equals(endPoint));
+            PendingSyncs.Add((playerId, endPoint));
+            return;
+        }
+
+        // Anything still held back from a load that just ended goes in first.
+        NetworkActorManager.RunDeferredWorldChanges(true);
+        SendWorldTo(playerId, endPoint);
+    }
+
+    private static void SendWorldTo(string playerId, IPEndPoint endPoint)
     {
         var money = SceneContext.Instance.PlayerState.GetCurrency(
             GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>());
@@ -112,6 +172,16 @@ internal sealed class ReSyncManager
         lastSynchronizeAll = now;
 
         var clients = Main.Server.ClientManager.GetAllClients().ToList();
+
+        if (NetworkActorManager.IsSceneLoadingNow)
+        {
+            // Same as a single resync asked for during a load: sent when the load is done.
+            foreach (var client in clients)
+                SynchronizeClient(client.PlayerId, client.EndPoint);
+            return;
+        }
+
+        NetworkActorManager.RunDeferredWorldChanges(true);
 
         var gordoSlimesPacket       = CreateGordoSlimesPacket();
         var switchesPacket          = CreateSwitchesPacket();

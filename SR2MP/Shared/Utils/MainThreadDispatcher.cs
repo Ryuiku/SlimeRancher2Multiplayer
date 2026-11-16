@@ -49,6 +49,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         // Actor spawns and destroys that were held back while a zone was loading
         SR2MP.Shared.Managers.NetworkActorManager.RunDeferredWorldChanges();
 
+        // Joins and resyncs that waited for the host's zone load
+        try
+        {
+            SR2MP.Shared.Managers.ReSyncManager.RunPendingSyncs();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending a delayed world snapshot: {ex}");
+        }
+
         // Process client packets
         while (clientPacketQueue.TryDequeue(out var clientCache))
         {
@@ -102,6 +112,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
     public void DropClientPackets()
     {
         while (clientPacketQueue.TryDequeue(out var cache))
+            PacketReader.Return(cache.Reader);
+    }
+
+    /// <summary>
+    /// Throws away server packets that were received but not handled yet. Main thread only.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void DropServerPackets()
+    {
+        while (serverPacketQueue.TryDequeue(out var cache))
             PacketReader.Return(cache.Reader);
     }
 

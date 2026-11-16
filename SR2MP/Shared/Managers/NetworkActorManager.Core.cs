@@ -33,6 +33,12 @@ internal sealed partial class NetworkActorManager
     /// </summary>
     internal static readonly Dictionary<long, string> KnownOwners = new();
 
+    /// <summary>
+    /// Radiant look of slimes that exist here only as data (their zone is not loaded on this
+    /// machine), by actor id. Applied when the slime is built, and sent on to joining players.
+    /// </summary>
+    internal static readonly Dictionary<long, SR2MP.Packets.Actor.ActorAppearanceType> PendingRadiancy = new();
+
     internal static void RememberOwner(long actorId, string? ownerId)
     {
         if (actorId == 0)
@@ -237,6 +243,13 @@ internal sealed partial class NetworkActorManager
                 networkComponent.nextRotation     = model.lastRotation;
 
                 Actors[model.actorId.Value] = model;
+
+                if (PendingRadiancy.TryGetValue(model.actorId.Value, out var radiancy))
+                {
+                    var slime = model.TryCast<SlimeModel>();
+                    if (slime == null || ApplyRadiancy(slime, radiancy))
+                        PendingRadiancy.Remove(model.actorId.Value);
+                }
             }
             catch (Exception ex)
             {
@@ -341,7 +354,13 @@ internal sealed partial class NetworkActorManager
         }
     }
 
-    internal static void ClearDeferredWorldChanges() => DeferredWorldChanges.Clear();
+    internal static void ClearDeferredWorldChanges()
+    {
+        DeferredWorldChanges.Clear();
+        PendingRadiancy.Clear();
+    }
+
+    internal static bool IsSceneLoadingNow => IsSceneLoading();
 
     internal static bool IsPlayerActor(ActorId id)
     {

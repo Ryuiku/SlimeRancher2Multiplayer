@@ -66,6 +66,9 @@ internal sealed partial class NetworkActorManager
             }
         }
 
+        if (!gameObj && PendingRadiancy.TryGetValue(model.actorId.Value, out var pending))
+            radiancy = pending;
+
         return new InitialActorsPacket.Slime
         {
             ActorId = model.actorId.Value,

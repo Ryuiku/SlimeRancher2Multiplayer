@@ -9,7 +9,8 @@ namespace SR2MP.Handlers.Time;
 internal sealed class BaseFastForwardHandler : BasePacketHandler<FastForwardPacket>
 {
     // Game seconds. One game day is 86400.
-    private const double MaxSkipAhead = 86400 * 1.5;
+    // The game's longest own skip is just under 36 game hours, and clocks can be a little apart.
+    private const double MaxSkipAhead = 86400 * 3;
 
     protected override bool Handle(FastForwardPacket packet, IPEndPoint? _)
     {
@@ -27,10 +28,10 @@ internal sealed class BaseFastForwardHandler : BasePacketHandler<FastForwardPack
             return false;
         }
 
-        // The game holds a sleeping or knocked-out player in place until its own skip reaches the
-        // wake-up time. Another player's shorter skip replaced that target: the skip stopped early
-        // and this player stayed frozen while the rest of the time passed at normal speed.
-        if (SR2MP.Components.UI.MultiplayerUI.IsLocalPlayerLocked(out var unlockTime) && packet.Time < unlockTime)
+        // A skip that is already running to the same or a later time stays as it is. The game holds
+        // a sleeping or knocked-out player in place until its own skip reaches the wake-up time, so
+        // a shorter skip from another player must not replace it (on any machine, or clocks split).
+        if (timeDirector.IsFastForwarding() && SR2MP.Patches.Time.OnFastForward.RunningTarget >= packet.Time)
             return true;
 
         HandlingPacket = true;

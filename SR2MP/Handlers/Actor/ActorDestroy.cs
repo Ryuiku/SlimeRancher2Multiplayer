@@ -33,6 +33,10 @@ internal sealed class ActorDestroyHandler : BasePacketHandler<ActorDestroyPacket
 
     private static void Apply(ActorDestroyPacket packet)
     {
+        // Again here: a spawn that waited in the queue ahead of this destroy put them back.
+        NetworkActorManager.KnownOwners.Remove(packet.ActorId.Value);
+        NetworkActorManager.PendingRadiancy.Remove(packet.ActorId.Value);
+
         if (!GameState.TryGetIdentifiableModel(packet.ActorId, out var actor))
         {
             ActorManager.Actors.Remove(packet.ActorId.Value);

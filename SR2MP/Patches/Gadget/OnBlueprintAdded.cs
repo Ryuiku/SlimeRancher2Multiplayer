@@ -11,10 +11,16 @@ internal static class OnBlueprintAdded
 {
     public static void Postfix(GadgetDefinition __0, bool __result)
     {
-        if (!__result || HandlingPacket || !__0)
+        // Sent even when the blueprint was not new for this player: it can still be new for the
+        // others (a player who joined with a further progressed save opens a pod in the host's world).
+        if (HandlingPacket || !__0)
             return;
 
         if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+            return;
+
+        // A joining player's game is still handing out the blueprints of their own save.
+        if (!NetworkActorManager.CanSendActorChanges)
             return;
 
         try

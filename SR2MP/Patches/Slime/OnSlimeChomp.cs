@@ -101,13 +101,41 @@ internal static class OnSlimeChomp
         typeof(Il2CppSystem.Collections.Generic.List<IdentifiableType>),
         typeof(Il2CppSystem.Collections.Generic.List<IdentifiableType>), typeof(bool)), HarmonyPrefix]
     public static bool EatImmediatePrefix(SlimeEat __instance, [HarmonyArgument(0)] GameObject target)
-        => MayEat(__instance) && TryOwnTarget(__instance, target);
+        => MayEatImmediate(__instance, target);
 
     [HarmonyPatch(nameof(SlimeEat.EatImmediate), typeof(GameObject), typeof(IdentifiableType),
         typeof(Il2CppSystem.Collections.Generic.List<IdentifiableType>),
         typeof(Il2CppSystem.Collections.Generic.List<IdentifiableType>), typeof(bool), typeof(double)), HarmonyPrefix]
     public static bool EatImmediateTimedPrefix(SlimeEat __instance, [HarmonyArgument(0)] GameObject target)
-        => MayEat(__instance) && TryOwnTarget(__instance, target);
+        => MayEatImmediate(__instance, target);
+
+    // EatImmediate without a food object is the game feeding corral slimes from feeders for the
+    // time a ranch area was asleep. A slime that was asleep with its area is ours again only a
+    // frame after it wakes, so the strict check would silently skip that feeding (no plorts for
+    // the time away). It is allowed unless another player is simulating the slime right now.
+    private static bool MayEatImmediate(SlimeEat slimeEat, GameObject target)
+    {
+        if (target)
+            return MayEat(slimeEat) && TryOwnTarget(slimeEat, target);
+
+        if (HandlingPacket || (!Main.Server.IsRunning && !Main.Client.IsConnected))
+            return true;
+
+        try
+        {
+            var eater = slimeEat.GetComponent<NetworkActor>();
+            if (!eater || eater.LocallyOwned)
+                return true;
+
+            eater.EnsureOwnerInfo();
+            return !eater.IsActivelyOwnedByOtherPlayer;
+        }
+        catch (Exception exception)
+        {
+            SrLogger.LogDebug($"OnSlimeChomp catch-up check failed: {exception.Message}");
+            return true;
+        }
+    }
 
     // True if the bite may go ahead: the target is ours, became ours, or isn't a synced actor at all.
     private static bool TryOwnTarget(SlimeEat slimeEat, GameObject target)

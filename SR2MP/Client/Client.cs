@@ -221,13 +221,20 @@ public sealed class SR2MPClient
 
     private void CheckConnectionTimeout(object? state)
     {
-        if (state is int generation && !IsCurrentConnection(generation))
+        // The attempt this timer belongs to. A newer attempt (the fallback address) must never be
+        // torn down by the timer of the one before it.
+        var generation = state is int created ? created : Volatile.Read(ref connectionGeneration);
+
+        if (!IsCurrentConnection(generation))
             return;
 
         if (connectionAcknowledged || !isConnected)
             return;
 
-        if (TryStartFallback(Volatile.Read(ref connectionGeneration), "did not answer"))
+        if (TryStartFallback(generation, "did not answer"))
+            return;
+
+        if (!IsCurrentConnection(generation))
             return;
 
         SrLogger.LogError("Connection timeout: Server did not respond in time");
@@ -519,7 +526,14 @@ public sealed class SR2MPClient
                 try
                 {
                     if (!isConnected && !isConnecting)
+                    {
+                        // Packets of the old session that were not handled yet would be applied
+                        // after this and freeze their actors again.
+                        if (MainThreadDispatcher.Instance)
+                            MainThreadDispatcher.Instance.DropClientPackets();
+
                         ActorManager.ReleaseAllToLocal();
+                    }
                 }
                 catch (Exception ex)
                 {

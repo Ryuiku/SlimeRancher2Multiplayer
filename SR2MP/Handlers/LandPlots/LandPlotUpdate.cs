@@ -55,6 +55,12 @@ internal sealed class NewLandPlotHandler : BasePacketHandler<NewLandPlotPacket>
             {
                 model.upgrades?.Clear();
                 model.resourceGrowerDefinition = null;
+
+                // Storage is kept per kind, not per plot type, so the old silo, collector and
+                // feeder contents would show up again in a new plot of the same type.
+                model.siloAmmo?.Clear();
+                model.ashUnits = 0f;
+                model.feederCycleSpeed = default;
             }
             catch (Exception ex)
             {

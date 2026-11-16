@@ -69,6 +69,7 @@ internal static class OnActorDestroy
 
         ActorManager.Actors.Remove(actor.GetActorId().Value);
         NetworkActorManager.KnownOwners.Remove(actor.GetActorId().Value);
+        NetworkActorManager.PendingRadiancy.Remove(actor.GetActorId().Value);
 
         if (!NetworkActorManager.CanSendActorChanges)
             return true;
