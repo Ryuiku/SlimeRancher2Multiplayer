@@ -10,7 +10,7 @@ internal static class OnGordoSlimeFed
 {
     // Every machine that has the gordo loaded has its own copy of the food, and each copy used to
     // feed the gordo and report the new count. Only the machine that simulates the food feeds it.
-    public static bool Prefix(GameObject obj, out bool __state)
+    public static bool Prefix([HarmonyArgument(0)] GameObject obj, out bool __state)
     {
         __state = true;
 

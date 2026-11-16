@@ -97,6 +97,8 @@ public sealed class SR2MPServer
             SR2MP.Shared.Managers.NetworkGordoSlimeManager.Reset();
             SR2MP.Shared.Managers.NetworkActorManager.KnownOwners.Clear();
             SR2MP.Shared.Managers.NetworkActorManager.ClearDeferredWorldChanges();
+            SR2MP.Shared.Managers.NetworkDroneManager.CachedOwners.Clear();
+            SR2MP.Shared.Managers.NetworkDroneManager.PendingOwners.Clear();
             InvokeServerStarted();
             MultiplayerUI.Instance.RegisterSystemMessage(
                 "The world is now open to others!",

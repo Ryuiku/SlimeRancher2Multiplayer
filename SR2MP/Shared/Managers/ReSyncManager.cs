@@ -171,9 +171,12 @@ internal sealed class ReSyncManager
             SendBlueprintsPacket(client.EndPoint);
             SendConversationsPacket(client.EndPoint);
             SendWeatherPacket(client.EndPoint);
+            SendDroneResourcesPacket(client.EndPoint);
             SendActorsPacket(client.EndPoint, PlayerIdGenerator.GetPlayerIDNumber(client.PlayerId));
             SendGadgetLinksPacket(client.EndPoint);
             SendTeleporterLinksPacket(client.EndPoint);
+            SendDroneCloudPacket(client.EndPoint);
+            SendTornadosPacket(client.EndPoint);
         }
 
         SrLogger.LogMessage($"Resynced {clients.Count} players!");

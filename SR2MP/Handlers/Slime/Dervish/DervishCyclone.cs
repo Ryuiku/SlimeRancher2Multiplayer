@@ -11,12 +11,12 @@ internal sealed class DervishCycloneHandler : BasePacketHandler<DervishCyclonePa
 {
     protected override bool Handle(DervishCyclonePacket packet, IPEndPoint? _)
     {
-        if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model)) return false;
+        if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model)) return true;
 
-        if (!model.TryGetNetworkComponent(out var networkComponent)) return false;
+        if (!model.TryGetNetworkComponent(out var networkComponent)) return true;
 
         var spin = networkComponent.GetComponent<DervishSlimeSpin>();
-        if (!spin) return false;
+        if (!spin) return true;
 
         HandlingPacket = true;
 
