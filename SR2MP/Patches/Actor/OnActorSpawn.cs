@@ -25,6 +25,11 @@ internal static class OnActorSpawn
         if (!actor)
             yield break;
 
+        // A joining client that hasn't received the host's world yet would announce actors with ids
+        // that belong to other actors on the host.
+        if (!NetworkActorManager.CanSendActorChanges)
+            yield break;
+
         var id = actor.GetComponent<IdentifiableActor>().GetActorId();
 
         var packet = new ActorSpawnPacket

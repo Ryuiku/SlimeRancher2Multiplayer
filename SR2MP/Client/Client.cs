@@ -146,6 +146,7 @@ public sealed class SR2MPClient
             }
 
             PacketDeduplication.Clear();
+            NetworkActorManager.InitialActorsLoaded = false;
 
             serverEndPoint = new IPEndPoint(parsedIp, port);
             udpClient.Connect(serverEndPoint);
@@ -324,11 +325,18 @@ public sealed class SR2MPClient
 
             var splitResult = PacketChunkManager.SplitPacket(data, reliability, channel, sequenceNumber, out var packetId);
 
-            if (reliability.HasFlag(PacketReliability.Reliable))
-                reliabilityManager?.TrackPacket(splitResult, serverEndPoint, packetId, data[0], reliability);
+            // Large reliable packets are handed to the reliability manager, which sends the chunks
+            // paced and resends only the ones that weren't acknowledged.
+            var paced = reliability.HasFlag(PacketReliability.Reliable) && splitResult.Count > 1 && reliabilityManager != null;
 
-            for (var i = 0; i < splitResult.Count; i++)
-                SendRaw(splitResult.Chunks[i], serverEndPoint);
+            if (reliability.HasFlag(PacketReliability.Reliable))
+                reliabilityManager?.TrackPacket(splitResult, serverEndPoint, packetId, data[0], reliability, alreadySent: !paced);
+
+            if (!paced)
+            {
+                for (var i = 0; i < splitResult.Count; i++)
+                    SendRaw(splitResult.Chunks[i], serverEndPoint);
+            }
 
             if (!reliability.HasFlag(PacketReliability.Reliable))
                 splitResult.Dispose();
@@ -349,8 +357,8 @@ public sealed class SR2MPClient
     }
 
     // Handle acknowledgement from server, used in client packet manager
-    internal void HandleAck(IPEndPoint sender, ushort packetId, byte packetType)
-        => reliabilityManager?.HandleAck(sender, packetId, packetType);
+    internal void HandleAck(IPEndPoint sender, ushort packetId, byte packetType, ushort chunkIndex)
+        => reliabilityManager?.HandleAck(sender, packetId, packetType, chunkIndex);
 
     internal bool ShouldProcessOrderedPacket(IPEndPoint sender, ushort sequenceNumber, byte packetType, NetworkChannel channel, PacketReliability reliability,
         Action? processAction = null)
@@ -388,6 +396,7 @@ public sealed class SR2MPClient
             }
 
             PacketDeduplication.Clear();
+            NetworkActorManager.InitialActorsLoaded = false;
 
             isConnected = false;
             isConnecting = false;

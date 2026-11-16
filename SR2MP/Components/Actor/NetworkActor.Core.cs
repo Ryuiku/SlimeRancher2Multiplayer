@@ -6,6 +6,7 @@ using Il2CppMonomiPark.SlimeRancher.Regions;
 using Il2CppMonomiPark.SlimeRancher.Slime;
 using JetBrains.Annotations;
 using SR2MP.Packets.Actor;
+using SR2MP.Shared.Managers;
 using SR2MP.Shared.Utils;
 using Starlight.Storage;
 using Delegate = Il2CppSystem.Delegate;
@@ -200,6 +201,9 @@ internal sealed partial class NetworkActor : MonoBehaviour
             if (actorId.Value == 0)
                 yield break;
 
+            if (!NetworkActorManager.CanSendActorChanges)
+                yield break;
+
             LocallyOwned = !hibernating;
 
             if (hibernating)
@@ -264,7 +268,7 @@ internal sealed partial class NetworkActor : MonoBehaviour
 
             SyncTimer = Timers.ActorTimer;
 
-            if (LocallyOwned)
+            if (LocallyOwned && NetworkActorManager.CanSendActorChanges)
             {
                 SendStateUpdate();
                 SendWorldUpdate();
@@ -321,7 +325,7 @@ internal sealed partial class NetworkActor : MonoBehaviour
 
         ResetLabyrinthToVanilla();
 
-        if (LocallyOwned)
+        if (LocallyOwned && NetworkActorManager.CanSendActorChanges)
         {
             if (SystemContext.Instance != null && SystemContext.Instance.SceneLoader != null && SystemContext.Instance.SceneLoader.IsSceneLoadInProgress)
                 return;

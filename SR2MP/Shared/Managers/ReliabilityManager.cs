@@ -1,6 +1,7 @@
 ﻿using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net;
+using SR2MP.Packets.Internal;
 using SR2MP.Packets.Utils;
 using SR2MP.Shared.Utils;
 
@@ -15,41 +16,68 @@ internal sealed class ReliabilityManager
         public ushort PacketId;
         public byte PacketType;
         public DateTime FirstSendTime;
-        public DateTime LastSendTime;
+        public DateTime LastProgressTime;
+        public DateTime LastPassEnd;
         public int SendCount;
+
+        // Per-chunk acknowledgement state, so only missing chunks get resent.
+        public bool[] ChunkAcked = Array.Empty<bool>();
+        public int AckedCount;
+
+        // Paced sending: chunks of a pass are sent a few at a time instead of all at once.
+        public bool PassInProgress;
+        public int Cursor;
 
         public bool IsRecycled { get; set; }
 
         private void Initialize(SplitResult splitData, IPEndPoint destination, ushort packetId,
-            byte packetType)
+            byte packetType, bool alreadySent)
         {
             SplitData = splitData;
             Destination = destination;
             PacketId = packetId;
             PacketType = packetType;
 
-            FirstSendTime = DateTime.UtcNow;
-            LastSendTime = DateTime.UtcNow;
+            var now = DateTime.UtcNow;
+            FirstSendTime = now;
+            LastProgressTime = now;
+            LastPassEnd = now;
             SendCount = 1;
+
+            ChunkAcked = new bool[splitData.Count];
+            AckedCount = 0;
+
+            // Single chunk packets are sent right away by the caller.
+            // Multi chunk packets are sent by the resend thread, paced.
+            PassInProgress = !alreadySent;
+            Cursor = 0;
         }
 
         public void Recycle()
         {
             SplitData.Dispose();
             Destination = null!;
+            ChunkAcked = Array.Empty<bool>();
         }
 
         public void Dispose() => Return(this);
 
         public static PendingPacket Borrow(SplitResult splitData, IPEndPoint destination,
-            ushort packetId, byte packetType)
+            ushort packetId, byte packetType, bool alreadySent)
         {
             var packet = RecyclePool<PendingPacket>.Borrow();
-            packet.Initialize(splitData, destination, packetId, packetType);
+            packet.Initialize(splitData, destination, packetId, packetType, alreadySent);
             return packet;
         }
 
-        public static void Return(PendingPacket packet) => RecyclePool<PendingPacket>.Return(packet);
+        public static void Return(PendingPacket packet)
+        {
+            lock (packet)
+            {
+                if (!packet.IsRecycled)
+                    RecyclePool<PendingPacket>.Return(packet);
+            }
+        }
     }
 
     private readonly ConcurrentDictionary<PacketKey, PendingPacket> pendingPackets = new();
@@ -65,9 +93,21 @@ internal sealed class ReliabilityManager
     private volatile bool isRunning;
 
     private static readonly TimeSpan ResendInterval = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan MaxRetryTime = TimeSpan.FromSeconds(10);
+
+    // A packet is only given up on when the receiver stops acknowledging anything for this long,
+    // instead of a fixed time since the first send. Large packets (the initial world data on join)
+    // can take a while over slow connections, but they keep making progress.
+    private static readonly TimeSpan NoProgressTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan MaxRetryTime = TimeSpan.FromSeconds(120);
     private const int MaxResendAttempts = 64;
     private const int MaxReorderBufferSize = 64;
+
+    // How many chunks (max ~512 bytes each) may be sent to one destination per resend tick.
+    // The resend thread ticks roughly every 10-16ms, so this is ~250-400KB/s per player.
+    // Sending everything at once overflowed tunnels/routers and the tail of every burst got dropped.
+    private const int ChunkBudgetPerTick = 8;
+
+    private readonly Dictionary<IPEndPoint, int> chunkBudgetUsed = new();
 
     public ReliabilityManager(Action<ArraySegment<byte>, IPEndPoint> sendRawCallback)
     {
@@ -113,19 +153,57 @@ internal sealed class ReliabilityManager
         SrLogger.LogMessage("ReliabilityManager stopped");
     }
 
+    // Tracks a reliable packet until it is acknowledged.
+    // alreadySent: true if the caller already sent every chunk once. When false, the resend thread
+    // sends the chunks itself, paced, so large packets don't flood the connection.
     public void TrackPacket(SplitResult splitData, IPEndPoint destination, ushort packetId,
-        byte packetType, PacketReliability reliability)
+        byte packetType, PacketReliability reliability, bool alreadySent = true)
     {
         if (!reliability.HasFlag(PacketReliability.Reliable))
             return;
 
         var key = new PacketKey(packetType, packetId, destination);
-        pendingPackets[key] = PendingPacket.Borrow(splitData, destination, packetId, packetType);
+        var packet = PendingPacket.Borrow(splitData, destination, packetId, packetType, alreadySent);
+
+        pendingPackets.AddOrUpdate(key, packet, (_, old) =>
+        {
+            // Packet id wrapped around while an old packet was still pending, drop the old one.
+            pendingDisposal.Enqueue(old);
+            return packet;
+        });
     }
 
-    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType)
+    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType, ushort chunkIndex = AckPacket.WholePacket)
     {
         var key = new PacketKey(packetType, packetId, sender);
+
+        if (chunkIndex != AckPacket.WholePacket)
+        {
+            if (!pendingPackets.TryGetValue(key, out var partial))
+                return;
+
+            var complete = false;
+
+            lock (partial)
+            {
+                if (partial.IsRecycled || chunkIndex >= partial.ChunkAcked.Length)
+                    return;
+
+                partial.LastProgressTime = DateTime.UtcNow;
+
+                if (!partial.ChunkAcked[chunkIndex])
+                {
+                    partial.ChunkAcked[chunkIndex] = true;
+                    partial.AckedCount++;
+                }
+
+                complete = partial.AckedCount >= partial.ChunkAcked.Length;
+            }
+
+            // All chunks arrived, the whole packet ack will follow but nothing needs resending anymore
+            if (!complete)
+                return;
+        }
 
         if (!pendingPackets.TryRemove(key, out var packet))
             return;
@@ -134,7 +212,7 @@ internal sealed class ReliabilityManager
             $"ACK received for packet {packetId} (type={packetType}) " +
             $"after {packet.SendCount} sends, " +
             $"latency={(DateTime.UtcNow - packet.FirstSendTime).TotalMilliseconds:F1}ms");
-        
+
         pendingDisposal.Enqueue(packet);
     }
 
@@ -262,35 +340,56 @@ internal sealed class ReliabilityManager
                 var keysToRemove  = ArrayPool<PacketKey>.Shared.Rent(count);
                 var removeCount   = 0;
 
+                chunkBudgetUsed.Clear();
+
                 foreach (var (key, packet) in pendingPackets)
                 {
-                    if (packet.IsRecycled)
-                        continue;
-                    
-                    if (now - packet.FirstSendTime > MaxRetryTime || packet.SendCount >= MaxResendAttempts)
+                    if (removeCount >= keysToRemove.Length)
+                        break;
+
+                    lock (packet)
                     {
-                        SrLogger.LogPacketAcknowledge(
-                            $"Packet {packet.PacketId} (type={packet.PacketType}) " +
-                            $"failed after {packet.SendCount} attempts");
-                        keysToRemove[removeCount++] = key;
-                        continue;
-                    }
+                        if (packet.IsRecycled)
+                            continue;
 
-                    // Checks if packet should be resent
-                    if (now - packet.LastSendTime > ResendInterval)
-                    {
-                        for (var i = 0; i < packet.SplitData.Count; i++)
-                            sendRawCallback(packet.SplitData.Chunks[i], packet.Destination);
-
-                        packet.LastSendTime = now;
-                        packet.SendCount++;
-
-                        if (packet.SendCount % 10 == 0)
+                        if (now - packet.LastProgressTime > NoProgressTimeout
+                            || now - packet.FirstSendTime > MaxRetryTime)
                         {
-                            SrLogger.LogPacketAcknowledge(
-                                $"Resending packet {packet.PacketId} " +
-                                $"(type={packet.PacketType}) attempt #{packet.SendCount}");
+                            SrLogger.LogWarning(
+                                $"Reliable packet {packet.PacketId} (type={packet.PacketType}) to {packet.Destination} " +
+                                $"was given up after {packet.SendCount} send passes " +
+                                $"({packet.AckedCount}/{packet.ChunkAcked.Length} chunks acknowledged)");
+                            keysToRemove[removeCount++] = key;
+                            continue;
                         }
+
+                        if (!packet.PassInProgress)
+                        {
+                            if (now - packet.LastPassEnd <= ResendInterval)
+                                continue;
+
+                            if (packet.SendCount >= MaxResendAttempts)
+                            {
+                                SrLogger.LogWarning(
+                                    $"Reliable packet {packet.PacketId} (type={packet.PacketType}) " +
+                                    $"was given up after {packet.SendCount} send passes");
+                                keysToRemove[removeCount++] = key;
+                                continue;
+                            }
+
+                            packet.PassInProgress = true;
+                            packet.Cursor = 0;
+                            packet.SendCount++;
+
+                            if (packet.SendCount % 10 == 0)
+                            {
+                                SrLogger.LogPacketAcknowledge(
+                                    $"Resending packet {packet.PacketId} " +
+                                    $"(type={packet.PacketType}) attempt #{packet.SendCount}");
+                            }
+                        }
+
+                        SendPacedChunks(packet, now);
                     }
                 }
 
@@ -313,7 +412,35 @@ internal sealed class ReliabilityManager
             }
         }
     }
-    
+
+    // Sends the next unacknowledged chunks of the current pass, within this tick's budget for the destination.
+    private void SendPacedChunks(PendingPacket packet, DateTime now)
+    {
+        chunkBudgetUsed.TryGetValue(packet.Destination, out var used);
+
+        var chunks = packet.SplitData.Chunks;
+        var total = packet.SplitData.Count;
+
+        while (packet.Cursor < total && used < ChunkBudgetPerTick)
+        {
+            var index = packet.Cursor++;
+
+            if (packet.ChunkAcked[index])
+                continue;
+
+            sendRawCallback(chunks[index], packet.Destination);
+            used++;
+        }
+
+        chunkBudgetUsed[packet.Destination] = used;
+
+        if (packet.Cursor < total)
+            return;
+
+        packet.PassInProgress = false;
+        packet.LastPassEnd = now;
+    }
+
     private void DrainDisposalQueue()
     {
         while (pendingDisposal.TryDequeue(out var packet))

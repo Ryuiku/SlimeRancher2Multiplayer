@@ -24,6 +24,12 @@ internal static class PacketDeduplication
         return !ProcessedPackets.TryAdd(key, DateTime.UtcNow);
     }
 
+    /// <summary>
+    /// Returns true if a packet with this key was already fully received and processed recently.
+    /// Does not record anything.
+    /// </summary>
+    public static bool WasProcessed(PacketKey key) => ProcessedPackets.ContainsKey(key);
+
     // public static void MarkProcessed(PacketKey key)
     //     => ProcessedPackets[key] = DateTime.UtcNow;
 

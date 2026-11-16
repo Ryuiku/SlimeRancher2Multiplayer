@@ -1,5 +1,6 @@
 using HarmonyLib;
 using SR2MP.Components.Actor;
+using SR2MP.Shared.Managers;
 using SR2MP.Packets.Actor;
 
 namespace SR2MP.Patches.Actor;
@@ -47,6 +48,16 @@ internal static class OnActorDestroy
             return true;
         }
 
+        // Only the player simulating a slime may destroy it. Every player's game runs slime logic
+        // (eating, turning into largos, despawning, falling out of the world), so without this any
+        // player whose copy of a slime got out of sync could delete it for everyone, including the host's save.
+        if (netActor != null && netActor.isSlime && !netActor.LocallyOwned
+            && (Main.Server.IsRunning || Main.Client.IsConnected))
+        {
+            SrLogger.LogPacketSize($"Blocked local destroy of slime {actor.GetActorId().Value} owned by '{netActor.CurrentOwnerId}' (source: {source})");
+            return false;
+        }
+
         // Drone destructions are handled differently
         if (actorObj.GetComponent<Il2CppMonomiPark.SlimeRancher.Drone.RanchDrone>() ||
             actorObj.GetComponent<Il2CppMonomiPark.SlimeRancher.Drone.ExplorerDrone>())
@@ -54,7 +65,7 @@ internal static class OnActorDestroy
 
         ActorManager.Actors.Remove(actor.GetActorId().Value);
 
-        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+        if (!NetworkActorManager.CanSendActorChanges)
             return true;
 
         try

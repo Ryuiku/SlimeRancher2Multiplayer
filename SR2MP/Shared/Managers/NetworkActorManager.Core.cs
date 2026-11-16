@@ -8,6 +8,20 @@ namespace SR2MP.Shared.Managers;
 internal sealed partial class NetworkActorManager
 {
     public readonly Dictionary<long, IdentifiableModel> Actors = new();
+
+    /// <summary>
+    /// True once a joining client has received and applied the host's actors (slimes, items, gadgets).
+    /// Until then the client still has the actors of the save it joined with, whose ids can match
+    /// completely different actors on the host, so it must not tell anyone about spawns, destroys,
+    /// ownership or positions.
+    /// </summary>
+    internal static bool InitialActorsLoaded { get; set; }
+
+    /// <summary>
+    /// Whether this game may send actor changes (spawn, destroy, ownership, position) to others.
+    /// </summary>
+    internal static bool CanSendActorChanges =>
+        Main.Server.IsRunning || (Main.Client.IsConnected && InitialActorsLoaded);
     public readonly Dictionary<int, IdentifiableType> ActorTypes = new();
 
     public static int GetPersistentID(IdentifiableType type)
@@ -138,6 +152,9 @@ internal sealed partial class NetworkActorManager
     
     internal void TakeOwnershipOfNearby(bool onlyUnownedSlimes = false)
     {
+        if (!CanSendActorChanges)
+            return;
+
         var boundsSize = new Vector3(600, 1250, 600);
         var ownershipBoundsSize = new Vector3(200, 1250, 200);
         var bounds = new Bounds(SceneContext.Instance.player.transform.position, boundsSize);
@@ -194,6 +211,9 @@ internal sealed partial class NetworkActorManager
     
     internal void AssignOwnershipOfUnowned()
     {
+        if (!CanSendActorChanges)
+            return;
+
         if (SceneContext.Instance?.player == null)
             return;
 

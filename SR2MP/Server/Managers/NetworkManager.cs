@@ -124,11 +124,18 @@ internal sealed class NetworkManager
 
             var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, out var packetId);
 
-            if (packetReliability.HasFlag(PacketReliability.Reliable))
-                reliabilityManager?.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability);
+            // Large reliable packets are handed to the reliability manager, which sends the chunks
+            // paced and resends only the ones that weren't acknowledged.
+            var paced = packetReliability.HasFlag(PacketReliability.Reliable) && splitResult.Count > 1 && reliabilityManager != null;
 
-            for (var i = 0; i < splitResult.Count; i++)
-                SendRaw(splitResult.Chunks[i], endPoint);
+            if (packetReliability.HasFlag(PacketReliability.Reliable))
+                reliabilityManager?.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability, alreadySent: !paced);
+
+            if (!paced)
+            {
+                for (var i = 0; i < splitResult.Count; i++)
+                    SendRaw(splitResult.Chunks[i], endPoint);
+            }
 
             if (!packetReliability.HasFlag(PacketReliability.Reliable))
                 splitResult.Dispose();
@@ -166,8 +173,8 @@ internal sealed class NetworkManager
             udpClient?.Client.SendTo(data.Array, data.Offset, data.Count, SocketFlags.None, endPoint);
     }
 
-    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType)
-        => reliabilityManager?.HandleAck(sender, packetId, packetType);
+    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType, ushort chunkIndex)
+        => reliabilityManager?.HandleAck(sender, packetId, packetType, chunkIndex);
 
     public bool ShouldProcessOrderedPacket(IPEndPoint sender, ushort sequenceNumber, byte packetType,
         NetworkChannel channel, PacketReliability reliability, Action? processAction = null)
