@@ -10,6 +10,10 @@ internal sealed partial class MultiplayerUI : MonoBehaviour
 {
     public static MultiplayerUI Instance { get; private set; }
 
+    // Shown in the window title so everyone can check they run the same build
+    // (the network protocol changed, so mixed builds can't play together).
+    internal const string TestBuildTag = "test build 1";
+
     private bool didUnfocus;
 
     private void Awake()
@@ -43,6 +47,7 @@ internal sealed partial class MultiplayerUI : MonoBehaviour
         HandleUIToggle();
         HandleChatToggle();
         HandleChatInput();
+        HandleUnstuck();
     }
 
     private void OnGUI()
@@ -75,7 +80,7 @@ internal sealed partial class MultiplayerUI : MonoBehaviour
     {
         if (state == MenuState.Hidden) return;
 
-        GUI.Box(new Rect(6, 6, WindowWidth, WindowHeight), "SR2MP (F4 to toggle)");
+        GUI.Box(new Rect(6, 6, WindowWidth, WindowHeight), $"SR2MP {TestBuildTag} (F4 to toggle)");
 
         switch (state)
         {

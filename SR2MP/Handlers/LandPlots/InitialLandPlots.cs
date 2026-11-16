@@ -17,6 +17,9 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
     {
         foreach (var plot in packet.LandPlots)
         {
+            // One plot failing must not stop every plot after it from loading.
+            try
+            {
             var model = GameState.landPlots[plot.ID];
 
             if (model.gameObj)
@@ -199,6 +202,15 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
                     model.gameObj.GetComponentInChildren<FillableAshSource>().SetModel(model);
                     break;
                 }
+            }
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not load land plot {plot.ID}: {ex.Message}");
+            }
+            finally
+            {
+                HandlingPacket = false;
             }
         }
 

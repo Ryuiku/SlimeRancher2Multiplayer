@@ -47,6 +47,27 @@ internal static class WeatherRegistryPatches
         }
     }
 
+    // On clients the game's own calculation can throw (the weather registry isn't simulated locally),
+    // which spammed the log every time the map was drawn. Fill the map data from the synced forecast instead.
+    [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyFinalizer]
+    public static Exception? CalculateZoneMapDataFinalizer(Exception? __exception, WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
+    {
+        if (__exception == null)
+            return null;
+
+        try
+        {
+            if (zoneMapData != null)
+                CalculateZoneMapDataPostfix(__instance, zoneMapData, mapData);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"CalculateZoneMapData fallback failed: {ex.Message}");
+        }
+
+        return null;
+    }
+
     [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyPostfix]
     public static void CalculateZoneMapDataPostfix(WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
     {

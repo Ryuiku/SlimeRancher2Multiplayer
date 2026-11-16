@@ -80,10 +80,13 @@ internal static class NetworkPlortDepositorManager
             return;
 
         model.AmountDeposited = amountDeposited;
-        model.NotifyParticipants();
 
+        // The depositor may not be loaded on this machine (its zone isn't loaded), and
+        // NotifyParticipants throws without a game object.
         if (!model._gameObject)
             return;
+
+        model.NotifyParticipants();
 
         var depositor = model._gameObject.GetComponent<PlortDepositor>();
         if (!depositor)

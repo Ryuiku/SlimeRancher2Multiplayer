@@ -17,7 +17,11 @@ internal static class NetworkWeatherManager
         {
             if (!director)
             {
-                director = Resources.FindObjectsOfTypeAll<WeatherDirector>().FirstOrDefault()!;
+                // Prefer the director that is actually in the loaded scene, not a prefab or leftover copy
+                // (those have no VFX control and throw when a weather state is stopped on them).
+                var all = Resources.FindObjectsOfTypeAll<WeatherDirector>();
+                director = all.FirstOrDefault(d => d && d.gameObject.scene.IsValid() && d.gameObject.activeInHierarchy)
+                           ?? all.FirstOrDefault()!;
             }
 
             return director;
@@ -102,20 +106,29 @@ internal static class NetworkWeatherManager
                         forecast.Pattern
                     );
 
-                    if (patternInstance == null)
+                    // One weather state failing to stop must not abort the whole update,
+                    // or weather stays out of sync for the rest of the session.
+                    try
                     {
-                        localDirector.StopState(
-                            forecast.State.Cast<IWeatherState>(),
-                            zone.Parameters
-                        );
+                        if (patternInstance == null)
+                        {
+                            localDirector.StopState(
+                                forecast.State.Cast<IWeatherState>(),
+                                zone.Parameters
+                            );
+                        }
+                        else
+                        {
+                            registry.StopPatternState(
+                                zoneKey,
+                                patternInstance,
+                                forecast.State
+                            );
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        registry.StopPatternState(
-                            zoneKey,
-                            patternInstance,
-                            forecast.State
-                        );
+                        SrLogger.LogDebug($"Weather: could not stop a state in {zoneKey.name}: {ex.Message}");
                     }
                 }
 
@@ -151,18 +164,25 @@ internal static class NetworkWeatherManager
                     forecast.Pattern
                 );
 
-                if (patternInstance == null)
+                try
                 {
-                    localDirector.RunState(forecast.State.Cast<IWeatherState>(), activeZone.Parameters, immediate);
+                    if (patternInstance == null)
+                    {
+                        localDirector.RunState(forecast.State.Cast<IWeatherState>(), activeZone.Parameters, immediate);
+                    }
+                    else
+                    {
+                        registry.RunPatternState(
+                            localDirector.Zone,
+                            patternInstance,
+                            forecast.State,
+                            immediate
+                        );
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    registry.RunPatternState(
-                        localDirector.Zone,
-                        patternInstance,
-                        forecast.State,
-                        immediate
-                    );
+                    SrLogger.LogDebug($"Weather: could not start a state: {ex.Message}");
                 }
             }
 

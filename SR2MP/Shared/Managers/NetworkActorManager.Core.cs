@@ -187,11 +187,9 @@ internal sealed partial class NetworkActorManager
                     var ownerId = netActor.CurrentOwnerId;
                     var ownerExists = !string.IsNullOrEmpty(ownerId) && PlayerManager.CheckPlayerExists(ownerId);
 
-                    if (netActor.isPlort && !ownerExists)
-                    {
-                        try { Destroyer.DestroyAny(actor.GetGameObject(), "SR2MP.UnownedSlimeOwnership"); } catch { /* ignored */ }
-                        continue;
-                    }
+                    // Plorts without a live owner used to be destroyed here, and the destroy was broadcast,
+                    // which wiped plorts loaded from the save (they have no owner yet) for everyone.
+                    // Taking them over like any other unowned actor is enough.
 
                     if (ownerExists
                         && netActor.OwnerRecentlyHeard
