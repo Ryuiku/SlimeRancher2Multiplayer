@@ -2,6 +2,8 @@
 // https://github.com/pyeight/SlimeRancher2Multiplayer/pull/32/
 
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 
 namespace SR2MP.Shared.Utils;
 
@@ -11,6 +13,190 @@ public static class JoinCode
     private const int Ipv6Bytes = 18;
     private const int Ipv4CodeLength = 9;
     private const int Ipv6CodeLength = 25;
+
+    // Public IPv4 + port, then the host's LAN IPv4 + local port. Lets players on the host's home
+    // network connect directly, since most routers can't connect to their own public IP (no NAT hairpinning).
+    private const int Ipv4LanBytes = 12;
+    private const int Ipv4LanCodeLength = 17;
+
+    /// <summary>
+    /// Encodes the public address, plus this machine's LAN address when it has one.
+    /// </summary>
+    public static string EncodeWithLan(IPAddress address, ushort port, ushort localPort)
+    {
+        var lan = GetLocalLanAddress();
+        var bytes = address.GetAddressBytes();
+
+        if (lan == null || bytes.Length != 4 || lan.Equals(address))
+            return Encode(address, port);
+
+        var data = new byte[Ipv4LanBytes];
+        Buffer.BlockCopy(bytes, 0, data, 0, 4);
+        data[4] = (byte)(port >> 8);
+        data[5] = (byte)port;
+        Buffer.BlockCopy(lan.GetAddressBytes(), 0, data, 6, 4);
+        data[10] = (byte)(localPort >> 8);
+        data[11] = (byte)localPort;
+
+        return Base58.Encode(data).PadLeft(Ipv4LanCodeLength, '1');
+    }
+
+    public static bool TryDecode(string code, out IPAddress address, out ushort port, out IPEndPoint? lanEndPoint, out string error)
+    {
+        lanEndPoint = null;
+
+        if (code != null && code.Trim().Length == Ipv4LanCodeLength)
+        {
+            address = null!;
+            port = 0;
+            error = string.Empty;
+
+            if (!TryDecodeBytes(code.Trim(), Ipv4LanBytes, out var decoded, out error))
+                return false;
+
+            port = (ushort)((decoded[4] << 8) | decoded[5]);
+            var lanPort = (ushort)((decoded[10] << 8) | decoded[11]);
+
+            if (port == 0 || lanPort == 0)
+            {
+                error = "Join code contains an invalid port.";
+                return false;
+            }
+
+            address = new IPAddress(decoded.AsSpan(0, 4));
+            lanEndPoint = new IPEndPoint(new IPAddress(decoded.AsSpan(6, 4)), lanPort);
+            return true;
+        }
+
+        return TryDecode(code!, out address, out port, out error);
+    }
+
+    /// <summary>
+    /// True if one of this machine's network adapters is on the same subnet as the given LAN address.
+    /// </summary>
+    public static bool IsOnSameLan(IPAddress lanAddress)
+    {
+        try
+        {
+            var target = lanAddress.GetAddressBytes();
+
+            foreach (var unicast in GetUsableIpv4Addresses())
+            {
+                var mask = unicast.IPv4Mask?.GetAddressBytes();
+                if (mask == null || mask.Length != 4 || mask.All(b => b == 0))
+                    mask = new byte[] { 255, 255, 255, 0 };
+
+                var local = unicast.Address.GetAddressBytes();
+                var same = true;
+                for (var i = 0; i < 4; i++)
+                {
+                    if ((local[i] & mask[i]) != (target[i] & mask[i]))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+
+                if (same)
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not check local network: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    private static IPAddress? GetLocalLanAddress()
+    {
+        try
+        {
+            // Prefer the adapter that has a default gateway (the one actually connected to the router).
+            IPAddress? fallback = null;
+
+            foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (!IsUsableAdapter(adapter))
+                    continue;
+
+                var properties = adapter.GetIPProperties();
+                var hasGateway = properties.GatewayAddresses.Any(g =>
+                    g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(IPAddress.Any));
+
+                foreach (var unicast in properties.UnicastAddresses)
+                {
+                    if (unicast.Address.AddressFamily != AddressFamily.InterNetwork || !IsPrivate(unicast.Address))
+                        continue;
+
+                    if (hasGateway)
+                        return unicast.Address;
+
+                    fallback ??= unicast.Address;
+                }
+            }
+
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not find a LAN address: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static IEnumerable<UnicastIPAddressInformation> GetUsableIpv4Addresses() =>
+        NetworkInterface.GetAllNetworkInterfaces()
+            .Where(IsUsableAdapter)
+            .SelectMany(a => a.GetIPProperties().UnicastAddresses)
+            .Where(u => u.Address.AddressFamily == AddressFamily.InterNetwork && IsPrivate(u.Address));
+
+    private static bool IsUsableAdapter(NetworkInterface adapter) =>
+        adapter.OperationalStatus == OperationalStatus.Up
+        && adapter.NetworkInterfaceType != NetworkInterfaceType.Loopback
+        && adapter.NetworkInterfaceType != NetworkInterfaceType.Tunnel;
+
+    private static bool IsPrivate(IPAddress address)
+    {
+        var b = address.GetAddressBytes();
+        return b[0] == 10
+               || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+               || (b[0] == 192 && b[1] == 168);
+    }
+
+    private static bool TryDecodeBytes(string code, int expectedBytes, out byte[] decoded, out string error)
+    {
+        error = string.Empty;
+        decoded = Array.Empty<byte>();
+
+        try
+        {
+            var raw = Base58.Decode(code);
+            if (raw.Length > expectedBytes)
+            {
+                var extra = raw.Length - expectedBytes;
+                for (var i = 0; i < extra; i++)
+                {
+                    if (raw[i] != 0)
+                    {
+                        error = "Join code decoded to unexpected length.";
+                        return false;
+                    }
+                }
+            }
+
+            decoded = new byte[expectedBytes];
+            var count = Math.Min(raw.Length, expectedBytes);
+            Buffer.BlockCopy(raw, raw.Length - count, decoded, expectedBytes - count, count);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Join code is invalid: {ex.Message}";
+            return false;
+        }
+    }
 
     public static string Encode(IPAddress address, ushort port)
     {

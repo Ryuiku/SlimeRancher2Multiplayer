@@ -30,6 +30,13 @@ public sealed class SR2MPClient
     private volatile bool connectionAcknowledged;
     private Timer? connectionTimeoutTimer;
     private const int ConnectionTimeoutSeconds = 10;
+    internal const int LanConnectionTimeoutSeconds = 4;
+
+    /// <summary>
+    /// Where to connect next if the current attempt times out (the public address from a join code,
+    /// after trying the host's LAN address first).
+    /// </summary>
+    internal IPEndPoint? FallbackEndPoint;
 
     private bool shownConnectionError;
     private bool subscribedToQuitting;
@@ -94,7 +101,7 @@ public sealed class SR2MPClient
         PlayerManager.OnPlayerUpdated += (playerId, player) => OnPlayerUpdate?.Invoke(playerId, player);
     }
 
-    internal void Connect(string serverIp, int port)
+    internal void Connect(string serverIp, int port, int timeoutSeconds = ConnectionTimeoutSeconds)
     {
         if (Main.Server.IsRunning)
         {
@@ -171,7 +178,7 @@ public sealed class SR2MPClient
             receiveThread.Start();
 
             connectionTimeoutTimer = new Timer(CheckConnectionTimeout, null,
-                TimeSpan.FromSeconds(ConnectionTimeoutSeconds), Timeout.InfiniteTimeSpan);
+                TimeSpan.FromSeconds(timeoutSeconds), Timeout.InfiniteTimeSpan);
 
             if (!subscribedToQuitting)
             {
@@ -205,7 +212,24 @@ public sealed class SR2MPClient
         if (connectionAcknowledged || !isConnected)
             return;
 
-        SrLogger.LogError("Connection timeout: Server did not respond within 10 seconds");
+        var fallback = FallbackEndPoint;
+        FallbackEndPoint = null;
+
+        if (fallback != null)
+        {
+            SrLogger.LogWarning("Host did not answer on the local network, trying their public address...",
+                $"Connection timeout, falling back to {fallback}");
+
+            MainThreadDispatcher.Instance.Enqueue(() =>
+            {
+                isConnecting = false;
+                Disconnect();
+                Connect(fallback.Address.ToString(), fallback.Port);
+            });
+            return;
+        }
+
+        SrLogger.LogError("Connection timeout: Server did not respond in time");
 
         isConnecting = false;
         Disconnect();
@@ -446,6 +470,7 @@ public sealed class SR2MPClient
 
     internal void NotifyConnected()
     {
+        FallbackEndPoint = null;
         isConnecting = false;
         isConnected = true;
         connectionAcknowledged = true;

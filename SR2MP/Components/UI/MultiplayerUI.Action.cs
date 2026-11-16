@@ -28,7 +28,7 @@ internal sealed partial class MultiplayerUI
         }
 
         Host(localPort);
-        hostJoinCode = JoinCode.Encode(address, tunnelPort);
+        hostJoinCode = JoinCode.EncodeWithLan(address, tunnelPort, localPort);
     }
 
     internal void StartAutoHost()
@@ -65,6 +65,7 @@ internal sealed partial class MultiplayerUI
 
         ip = ResolveIp(ip);
 
+        Main.Client.FallbackEndPoint = null;
         Main.Client.Connect(ip, port);
 
         Main.SetConfigValue("recent_ip", joinIpInput);
@@ -75,7 +76,7 @@ internal sealed partial class MultiplayerUI
     {
         joinCodeError = string.Empty;
 
-        if (!JoinCode.TryDecode(joinCodeInput, out var address, out var port, out var error))
+        if (!JoinCode.TryDecode(joinCodeInput, out var address, out var port, out var lanEndPoint, out var error))
         {
             joinCodeError = error;
             return;
@@ -83,6 +84,23 @@ internal sealed partial class MultiplayerUI
 
         joinIpInput = address.ToString();
         joinPortInput = port.ToString();
+
+        // On the host's home network, connect to their LAN address first: most routers can't
+        // connect to their own public IP. If that doesn't answer, fall back to the public address.
+        if (lanEndPoint != null && JoinCode.IsOnSameLan(lanEndPoint.Address))
+        {
+            SrLogger.LogMessage("Trying the host's local network address first...",
+                $"Join code: trying LAN {lanEndPoint} before {address}:{port}");
+
+            MenuEUtil.CloseOpenMenu();
+            Main.Client.FallbackEndPoint = new IPEndPoint(address, port);
+            Main.Client.Connect(lanEndPoint.Address.ToString(), lanEndPoint.Port, SR2MP.Client.SR2MPClient.LanConnectionTimeoutSeconds);
+
+            Main.SetConfigValue("recent_ip", joinIpInput);
+            Main.SetConfigValue("recent_port", joinPortInput);
+            return;
+        }
+
         Connect(joinIpInput, port);
     }
 

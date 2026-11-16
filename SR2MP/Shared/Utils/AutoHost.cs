@@ -96,7 +96,7 @@ internal static class AutoHost
                                               "\nYou need to use PlayIt or port forward.");
 
             Firewall.AddException(port);
-            var joinCode = JoinCode.Encode(externalIp!, port);
+            var joinCode = JoinCode.EncodeWithLan(externalIp!, port, port);
             SrLogger.LogMessage("UPnP: Join code generated!", $"UPnP: Join code generated for {externalIp}:{port}.");
 
             StartRefresh(device, port);
