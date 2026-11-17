@@ -17,6 +17,7 @@ internal sealed class PlayerUpdatePacket : IPacket
     public bool Sprinting;
     public float LookY;
     public int SceneGroup;
+    public byte VacMode;
 
     public PacketType Type => PacketType.PlayerUpdate;
     public PacketReliability Reliability => PacketReliability.Ordered;
@@ -42,6 +43,9 @@ internal sealed class PlayerUpdatePacket : IPacket
         writer.WritePackedBool(Sprinting);
         
         writer.WriteInt(SceneGroup);
+
+        // Sent with every update, so the other players' vac stream never stays on after a lost packet.
+        writer.WriteByte(VacMode);
     }
 
     public void Deserialise(PacketReader reader)
@@ -64,5 +68,7 @@ internal sealed class PlayerUpdatePacket : IPacket
         Sprinting = reader.ReadPackedBool();
 
         SceneGroup = reader.ReadInt();
+
+        VacMode = reader.ReadByte();
     }
 }

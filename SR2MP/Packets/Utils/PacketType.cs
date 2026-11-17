@@ -120,6 +120,7 @@ internal enum PacketType : byte
     ShopState = 163,              // Server -> Client                             Low (restock, join)                   Caretaker shop stock seeds and purchase counts
     SprinkleCanister = 164,       // Both Ways                                    Medium (producer only)                Sprinkle canister production state and contents
     InitialSprinkleCanisters = 165, // Server -> Client                           Low (depends on join)                 Sprinkle canisters on join
+    PlayerCosmetics = 146,        // Both Ways                                    Low (join, on change)                 A player's own vac palette, shown on their avatar for the others
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

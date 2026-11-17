@@ -12,6 +12,7 @@ internal abstract class BasePlayerLeaveHandler : BasePacketHandler<PlayerLeavePa
     protected static void RemovePlayerData(string playerId)
     {
         PlayerManager.RemovePlayer(playerId);
+        SR2MP.Shared.Managers.PlayerCosmeticsManager.Remove(playerId);
 
         if (PlayerObjects.TryGetValue(playerId, out var playerObj))
         {

@@ -43,6 +43,9 @@ internal partial class NetworkPlayer
     {
         if (IsLocal) return;
 
+        // An avatar left behind by a teleport or a loading screen, or in another scene, pushes nothing.
+        if (!IsLiveAvatar()) return;
+
         var position = transform.position;
 
         var hits = Physics.OverlapSphere(position, ForceFieldSearchRadius);

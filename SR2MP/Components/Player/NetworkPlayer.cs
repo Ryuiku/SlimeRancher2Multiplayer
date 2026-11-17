@@ -26,6 +26,15 @@ internal partial class NetworkPlayer : MonoBehaviour
     // private MeshRenderer[] renderers;
     private Collider collider;
 
+    // Every collider of every other player's avatar, by native pointer. The local character
+    // controller ignores these (Patches/Player/IgnoreRemoteAvatarCollisions.cs).
+    internal static readonly HashSet<IntPtr> RemoteAvatarColliders = new();
+    private Collider[]? avatarColliders;
+
+    // An avatar only stays solid (for slimes and items) while that player still sends updates and
+    // is not in another scene group; a frozen avatar left behind a loading screen pushes nothing.
+    private const long SolidWhileUpdatedWithinMs = 2000;
+
     public int previousScene;
     
     public Vector3 previousPosition;
@@ -102,7 +111,12 @@ internal partial class NetworkPlayer : MonoBehaviour
         if (IsLocal)
         {
             camera = GetComponent<SRCharacterController>()._cameraController.transform;
-            GetComponent<PlayerItemController>()._vacuumItem.AddComponent<NetworkPlayerSound>();
+            localVacuumItem = GetComponent<PlayerItemController>()._vacuumItem;
+            localVacuumItem.AddComponent<NetworkPlayerSound>();
+
+            // A new local player (just connected, or after a scene reload): tell the others the
+            // vac palette again.
+            PlayerCosmeticsManager.ResetLocal();
         }
         else
         {
@@ -136,6 +150,9 @@ internal partial class NetworkPlayer : MonoBehaviour
         
         if (IsLocal) return;
 
+        UnregisterAvatarColliders();
+        DestroyVacFX();
+
         CleanupGadgetPreview();
 
         DestroyMapMarker();
@@ -149,8 +166,34 @@ internal partial class NetworkPlayer : MonoBehaviour
         }
     }
 
-    private void SetupRenderersAndCollision() =>
+    private void SetupRenderersAndCollision()
+    {
         collider = GetComponentInChildren<Collider>();
+
+        if (IsLocal)
+            return;
+
+        avatarColliders = GetComponentsInChildren<Collider>(true);
+        foreach (var avatarCollider in avatarColliders)
+        {
+            if (avatarCollider)
+                RemoteAvatarColliders.Add(avatarCollider.Pointer);
+        }
+    }
+
+    private void UnregisterAvatarColliders()
+    {
+        if (avatarColliders == null)
+            return;
+
+        foreach (var avatarCollider in avatarColliders)
+        {
+            if (avatarCollider is not null)
+                RemoteAvatarColliders.Remove(avatarCollider.Pointer);
+        }
+
+        avatarColliders = null;
+    }
 
     public void Update()
     {
@@ -201,6 +244,9 @@ internal partial class NetworkPlayer : MonoBehaviour
 
         ReloadMeshTransform();
 
+        if (!IsLocal)
+            UpdateCosmetics();
+
         UpdateGadgetMode();
         UpdateForceField();
 
@@ -213,6 +259,8 @@ internal partial class NetworkPlayer : MonoBehaviour
 
         if (IsLocal)
         {
+            PlayerCosmeticsManager.PollLocal();
+
             RemotePlayerManager.SendPlayerUpdate(
                 position: transform.position,
                 rotation: transform.eulerAngles.y,
@@ -225,7 +273,8 @@ internal partial class NetworkPlayer : MonoBehaviour
                 forwardSpeed: animator.GetFloat(ForwardSpeed),
                 sprinting: animator.GetBool(Sprinting),
                 lookY: camera.eulerAngles.x,
-                sceneGroup: NetworkSceneManager.GetPersistentID(SystemContext.Instance.SceneLoader._currentSceneGroup)
+                sceneGroup: NetworkSceneManager.GetPersistentID(SystemContext.Instance.SceneLoader._currentSceneGroup),
+                vacMode: GetLocalVacMode()
             );
         }
         else
@@ -276,13 +325,53 @@ internal partial class NetworkPlayer : MonoBehaviour
         if (IsLocal)
             return;
 
-        collider.enabled = false;
-        collider.enabled = true;
+        if (collider)
+        {
+            // Turned off and on again so the collider follows the moved avatar.
+            collider.enabled = false;
+            collider.enabled = IsLiveAvatar();
+        }
+
+        UpdateAvatarVisibility();
     }
 
     [UsedImplicitly]
-    public void LateUpdate() => AnimateArmY();
+    public void LateUpdate()
+    {
+        AnimateArmY();
+        UpdateVacFX();
+    }
+
+    private byte GetLocalVacMode()
+    {
+        try
+        {
+            return localVacuumItem ? (byte)localVacuumItem!._vacMode : (byte)0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
     
+    // Still sending updates (not frozen behind a loading screen) and not known to be in another
+    // scene group. A scene group that cannot be mapped to an id counts as this one, as before.
+    private bool IsLiveAvatar() =>
+        model != null
+        && Environment.TickCount64 - model.LastUpdateTicks < SolidWhileUpdatedWithinMs
+        && !IsInOtherKnownSceneGroup();
+
+    // Both ids known and different. An unknown id never hides or disables anything.
+    private bool IsInOtherKnownSceneGroup()
+    {
+        if (model == null || model.LastUpdateTicks == 0)
+            return false;
+
+        var localSceneGroup = NetworkSceneManager.GetPersistentID(
+            SystemContext.Instance.SceneLoader._currentSceneGroup);
+        return localSceneGroup >= 0 && model.SceneGroup >= 0 && model.SceneGroup != localSceneGroup;
+    }
+
     private bool IsInLocalSceneGroup()
     {
         var localSceneGroup = NetworkSceneManager.GetPersistentID(

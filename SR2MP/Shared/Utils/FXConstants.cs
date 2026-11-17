@@ -12,6 +12,7 @@ internal static class FXConstants
         { PlayerFXType.VacAccept, false },
         { PlayerFXType.VacShoot, false },
         { PlayerFXType.WaterSplash, false },
+        { PlayerFXType.VacPulse, false },
 
         { PlayerFXType.VacHold, true },
         { PlayerFXType.VacShootEmpty, true },
@@ -19,7 +20,8 @@ internal static class FXConstants
         { PlayerFXType.VacRunning, true },
         { PlayerFXType.VacRunningStart, true },
         { PlayerFXType.VacRunningEnd, true },
-        { PlayerFXType.VacShootSound, true }
+        { PlayerFXType.VacShootSound, true },
+        { PlayerFXType.VacPulseSound, true }
     });
     public static readonly ReadOnlyDictionary<PlayerFXType, bool> DoesPlayerSoundLoopDictionary = new(new Dictionary<PlayerFXType, bool>
     {
@@ -29,6 +31,7 @@ internal static class FXConstants
         { PlayerFXType.VacRunningStart, false },
         { PlayerFXType.VacRunningEnd, false },
         { PlayerFXType.VacShootSound, false },
+        { PlayerFXType.VacPulseSound, false },
 
         { PlayerFXType.VacRunning, true }
     });
@@ -41,7 +44,8 @@ internal static class FXConstants
         { PlayerFXType.VacRunningEnd, 0.7f },
         { PlayerFXType.VacShootSound, 0.8f },
         { PlayerFXType.WaterSplash, 0.5f },
-        { PlayerFXType.VacHold, 0.65f }
+        { PlayerFXType.VacHold, 0.65f },
+        { PlayerFXType.VacPulseSound, 0.8f }
     });
     public static readonly ReadOnlyDictionary<PlayerFXType, bool> ShouldPlayerSoundBeTransientDictionary = new(new Dictionary<PlayerFXType, bool>
     {
@@ -52,7 +56,8 @@ internal static class FXConstants
         { PlayerFXType.VacHold, true },
         { PlayerFXType.VacShootEmpty, true },
         { PlayerFXType.VacSlotChange, true },
-        { PlayerFXType.VacShootSound, true }
+        { PlayerFXType.VacShootSound, true },
+        { PlayerFXType.VacPulseSound, true }
     });
 
     #endregion

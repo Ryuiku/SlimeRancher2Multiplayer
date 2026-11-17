@@ -193,7 +193,9 @@ public sealed class Main : StarlightExpansionV01
         SR2MP.Packets.Utils.PacketType.ModSyncAck or
         SR2MP.Packets.Utils.PacketType.ApiCall or
         SR2MP.Packets.Utils.PacketType.ReservedAcknowledge or
-        SR2MP.Packets.Utils.PacketType.ReservedCompression;
+        SR2MP.Packets.Utils.PacketType.ReservedCompression or
+        // A player's own look, never the host's world: sent from the moment of joining.
+        SR2MP.Packets.Utils.PacketType.PlayerCosmetics;
 
     /// <inheritdoc/>
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)

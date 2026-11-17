@@ -281,6 +281,7 @@ public sealed class SR2MPServer
             PacketDeduplication.Clear();
             ClientManager.Clear();
             PlayerManager.Clear();
+            SR2MP.Shared.Managers.PlayerCosmeticsManager.Clear();
             NetworkManager.Stop();
 
             // Actors the other players were simulating are frozen here, and nobody will move them now.

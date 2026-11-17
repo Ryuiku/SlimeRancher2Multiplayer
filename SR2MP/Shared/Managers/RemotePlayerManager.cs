@@ -64,7 +64,8 @@ public sealed class RemotePlayerManager
         float forwardSpeed = 0f,
         bool sprinting = false,
         float lookY = 0f,
-        int sceneGroup = 1)
+        int sceneGroup = 1,
+        byte vacMode = 0)
     {
         var playerId = Main.Client.IsConnected ? Main.Client.PlayerId : (Main.Server.IsRunning ? Main.Server.PlayerId : string.Empty);
         var updatePacket = new PlayerUpdatePacket
@@ -81,7 +82,8 @@ public sealed class RemotePlayerManager
             ForwardSpeed = forwardSpeed,
             Sprinting = sprinting,
             LookY = lookY,
-            SceneGroup = sceneGroup
+            SceneGroup = sceneGroup,
+            VacMode = vacMode
         };
         Main.SendToAllOrServer(updatePacket);
     }
@@ -99,7 +101,8 @@ public sealed class RemotePlayerManager
         float forwardSpeed,
         bool sprinting,
         float lookY,
-        int sceneGroup)
+        int sceneGroup,
+        byte vacMode = 0)
     {
         if (!players.TryGetValue(playerId, out var player))
             return;
@@ -117,6 +120,8 @@ public sealed class RemotePlayerManager
         player.LastLookY = player.LookY;
         player.LookY = lookY;
         player.SceneGroup = sceneGroup;
+        player.VacMode = vacMode;
+        player.LastUpdateTicks = Environment.TickCount64;
 
         OnPlayerUpdated?.Invoke(playerId, player);
     }

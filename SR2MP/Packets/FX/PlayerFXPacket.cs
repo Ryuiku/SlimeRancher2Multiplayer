@@ -17,7 +17,11 @@ internal sealed class PlayerFXPacket : IPacket
         VacRunning,
         VacRunningStart,
         VacRunningEnd,
-        VacShootSound
+        VacShootSound,
+
+        // Added at the end so the values above keep their numbers.
+        VacPulse,
+        VacPulseSound
     }
 
     public PlayerFXType FX;

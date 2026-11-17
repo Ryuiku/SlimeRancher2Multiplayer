@@ -143,6 +143,7 @@ internal sealed class ReSyncManager
         SendTornadosPacket(endPoint);
         SendUnlocksPacket(endPoint);
         SendSanctuaryPackets(endPoint);
+        PlayerCosmeticsManager.SendSnapshotTo(playerId, endPoint);
 
         SrLogger.LogMessage($"Player {playerId} resynced!", $"Player {playerId} ({endPoint}) resynced!");
     }
@@ -254,6 +255,7 @@ internal sealed class ReSyncManager
             SendTornadosPacket(client.EndPoint);
             SendUnlocksPacket(client.EndPoint);
             SendSanctuaryPackets(client.EndPoint);
+            PlayerCosmeticsManager.SendSnapshotTo(client.PlayerId, client.EndPoint);
         }
 
         SrLogger.LogMessage($"Resynced {clients.Count} players!");
