@@ -10,7 +10,7 @@ namespace SR2MP.Patches.Map;
 [HarmonyPatch(typeof(EventRecordModel), nameof(EventRecordModel.UpdateEventEntry))]
 internal static class OnZoneUnlocked
 {
-    public static void Postfix([HarmonyArgument(0)] IGameEvent gameEvent)
+    public static void Postfix(EventRecordModel __instance, [HarmonyArgument(0)] IGameEvent gameEvent)
     {
         if (HandlingPacket || gameEvent == null || !NetworkActorManager.CanSendActorChanges)
             return;
@@ -23,6 +23,11 @@ internal static class OnZoneUnlocked
 
             var dataKey = gameEvent.DataKey;
             if (string.IsNullOrEmpty(dataKey))
+                return;
+
+            // Only the first time: this method also runs when an existing record is counted up.
+            var entry = __instance.GetEventEntry(gameEvent);
+            if (entry != null && entry.count > 1)
                 return;
 
             Main.SendToAllOrServer(new MapUnlockPacket { NodeID = dataKey, EventKey = eventKey });

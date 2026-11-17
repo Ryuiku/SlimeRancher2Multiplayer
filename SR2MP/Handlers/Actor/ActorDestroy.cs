@@ -54,6 +54,8 @@ internal sealed class ActorDestroyHandler : BasePacketHandler<ActorDestroyPacket
             if (actor.TryCast<DroneStationGadgetModel>() != null)
                 NetworkDroneManager.RemoveStationDrone(packet.ActorId);
 
+            RemoveStatueSlime(actor);
+
             NetworkGadgetManager.RemoveTeleporterGadget(actor);
             NetworkGadgetManager.ForgetGadgetLink(packet.ActorId);
 
@@ -68,6 +70,37 @@ internal sealed class ActorDestroyHandler : BasePacketHandler<ActorDestroyPacket
         finally
         {
             HandlingPacket = false;
+        }
+    }
+
+    /// <summary>
+    /// The game that turned a ringtail to stone keeps the slime's model while the statue exists, so
+    /// it can bring the slime back. When another player removes the statue (they turned it back
+    /// into a ringtail of their own), that kept model would otherwise stay in this save forever and
+    /// come back as a second ringtail on the next zone load.
+    /// </summary>
+    private static void RemoveStatueSlime(IdentifiableModel actor)
+    {
+        try
+        {
+            var statue = actor.TryCast<Il2CppMonomiPark.SlimeRancher.DataModel.StatueFormModel>();
+            if (statue == null)
+                return;
+
+            var slimeId = statue.referencedActorId;
+            if (slimeId.Value == 0 || !GameState.TryGetIdentifiableModel(slimeId, out var slime) || slime == null)
+                return;
+
+            GameState.identifiables.Remove(slimeId);
+            if (slime.ident != null && GameState.identifiablesByIdent.TryGetValue(slime.ident, out var sameType))
+                sameType.Remove(slime);
+            GameState.DestroyIdentifiableModel(slime);
+            ActorManager.Actors.Remove(slimeId.Value);
+            NetworkActorManager.KnownOwners.Remove(slimeId.Value);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not remove the slime kept for a statue: {ex.Message}");
         }
     }
 
