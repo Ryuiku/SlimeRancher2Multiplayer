@@ -121,6 +121,9 @@ internal enum PacketType : byte
     SprinkleCanister = 164,       // Both Ways                                    Medium (producer only)                Sprinkle canister production state and contents
     InitialSprinkleCanisters = 165, // Server -> Client                           Low (depends on join)                 Sprinkle canisters on join
     PlayerCosmetics = 146,        // Both Ways                                    Low (join, on change)                 A player's own vac palette, shown on their avatar for the others
+    RanchCellSync = 127,          // Both Ways                                    Low (every 5 s per awake ranch area)  How far each ranch area has been simulated, and who runs its catch-up
+    PlortSold = 128,              // Client -> Server                             Medium (on sale)                      A client's plort sale, for the host's market saturation
+    InitialResourceSpawners = 129, // Server -> Client                            Low (depends on join)                 Garden and resource spawner growth from the host's save
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

@@ -1,5 +1,7 @@
+using Il2CppMonomiPark.SlimeRancher.DataModel;
 using SR2MP.Components.LandPlots;
 using SR2MP.Packets.LandPlots;
+using SR2MP.Packets.Loading;
 
 namespace SR2MP.Shared.Managers;
 
@@ -128,8 +130,179 @@ internal static class NetworkGardenManager
         var found = Gardens.TryGetValue(entry.GardenId, out var garden) && garden;
         SrLogger.LogGarden($"Garden update received: id='{entry.GardenId}', found={found}, nextSpawnTime={entry.NextSpawnTime}, storedWater={entry.StoredWater}");
         if (found)
+        {
             garden!.ApplyUpdate(entry.NextSpawnTime, entry.StoredWater, entry.NextSpawnRipens);
+            return;
+        }
+
+        ApplyToModel(entry);
     }
+
+    #region Gardens that are not loaded here
+
+    // Growth for gardens with no saved data here yet, by garden id. Applied when the garden loads.
+    private static readonly Dictionary<string, GardenUpdatePacket.Entry> PendingStates = new();
+
+    static NetworkGardenManager()
+    {
+        Main.Server.OnServerStarted +=      PendingStates.Clear;
+        Main.Client.OnConnected     += _ => PendingStates.Clear();
+        Main.Client.OnDisconnected  +=      PendingStates.Clear;
+    }
+
+    internal static bool TakePendingState(string gardenId, out GardenUpdatePacket.Entry entry)
+        => PendingStates.Remove(gardenId, out entry);
+
+    // The garden is not loaded here: its saved data (which the game finds by position when the
+    // area loads) gets the owner's growth, so this save, the host's included, keeps it.
+    private static void ApplyToModel(GardenUpdatePacket.Entry entry)
+    {
+        try
+        {
+            var model = entry.Position == Vector3.zero ? null : FindSpawnerModel(entry.Position);
+            if (model == null)
+            {
+                PendingStates[entry.GardenId] = entry;
+                return;
+            }
+
+            model.nextSpawnTime = entry.NextSpawnTime;
+            model.storedWater = entry.StoredWater;
+            model.nextSpawnRipens = entry.NextSpawnRipens;
+            PendingStates.Remove(entry.GardenId);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not write garden '{entry.GardenId}' to the save: {ex.Message}");
+        }
+    }
+
+    // Saved spawner data by position, rounded to whole metres. Rebuilt when the list changes size.
+    private static readonly Dictionary<(int, int, int), List<SpawnResourceModel>> SpawnerIndex = new();
+    private static int spawnerIndexCount = -1;
+    private static IntPtr spawnerIndexList;
+    private const float SamePositionSqr = 0.25f;
+
+    internal static SpawnResourceModel? FindSpawnerModel(Vector3 position)
+    {
+        var list = SceneContext.Instance ? SceneContext.Instance.GameModel?.resourceSpawners : null;
+        if (list == null)
+            return null;
+
+        if (list.Count != spawnerIndexCount || list.Pointer != spawnerIndexList)
+        {
+            SpawnerIndex.Clear();
+            foreach (var model in list)
+            {
+                if (model == null)
+                    continue;
+
+                var key = GridKey(model.pos);
+                if (!SpawnerIndex.TryGetValue(key, out var bucket))
+                    SpawnerIndex[key] = bucket = new List<SpawnResourceModel>(1);
+                bucket.Add(model);
+            }
+
+            spawnerIndexCount = list.Count;
+            spawnerIndexList = list.Pointer;
+        }
+
+        var (x, y, z) = GridKey(position);
+        SpawnResourceModel? best = null;
+        var bestDistance = SamePositionSqr;
+
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dy = -1; dy <= 1; dy++)
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            if (!SpawnerIndex.TryGetValue((x + dx, y + dy, z + dz), out var bucket))
+                continue;
+
+            foreach (var model in bucket)
+            {
+                var distance = (model.pos - position).sqrMagnitude;
+                if (distance >= bestDistance)
+                    continue;
+
+                bestDistance = distance;
+                best = model;
+            }
+        }
+
+        return best;
+    }
+
+    private static (int, int, int) GridKey(Vector3 position)
+        => (Mathf.RoundToInt(position.x), Mathf.RoundToInt(position.y), Mathf.RoundToInt(position.z));
+
+    /// <summary>
+    /// The growth of every garden and resource spawner in the host's save, for a joining player.
+    /// </summary>
+    internal static InitialResourceSpawnersPacket CreateInitialPacket()
+    {
+        var entries = new List<InitialResourceSpawnersPacket.Entry>();
+
+        var list = SceneContext.Instance ? SceneContext.Instance.GameModel?.resourceSpawners : null;
+        if (list != null)
+        {
+            foreach (var model in list)
+            {
+                if (model == null)
+                    continue;
+
+                entries.Add(new InitialResourceSpawnersPacket.Entry
+                {
+                    Position = model.pos,
+                    NextSpawnTime = model.nextSpawnTime,
+                    StoredWater = model.storedWater,
+                    NextSpawnRipens = model.nextSpawnRipens
+                });
+            }
+        }
+
+        return new InitialResourceSpawnersPacket { Entries = entries };
+    }
+
+    /// <summary>
+    /// A joining player: the host's growth is written to the saved data of the spawners that are
+    /// not loaded here. Loaded ones get it from their owner through their NetworkGarden.
+    /// </summary>
+    internal static void ApplyInitialPacket(InitialResourceSpawnersPacket packet)
+    {
+        int applied = 0, live = 0, missing = 0;
+
+        foreach (var entry in packet.Entries)
+        {
+            try
+            {
+                var model = FindSpawnerModel(entry.Position);
+                if (model == null)
+                {
+                    missing++;
+                    continue;
+                }
+
+                if (model.part != null)
+                {
+                    live++;
+                    continue;
+                }
+
+                model.nextSpawnTime = entry.NextSpawnTime;
+                model.storedWater = entry.StoredWater;
+                model.nextSpawnRipens = entry.NextSpawnRipens;
+                applied++;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not apply a resource spawner from the host: {ex.Message}");
+            }
+        }
+
+        SrLogger.LogDebug($"Resource spawners from the host: {applied} written, {live} loaded here (left to their owner), {missing} not in this save");
+    }
+
+    #endregion
     
     internal static void Tick()
     {

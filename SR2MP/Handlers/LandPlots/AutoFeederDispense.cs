@@ -10,7 +10,22 @@ internal sealed class AutoFeederDispenseHandler : BasePacketHandler<AutoFeederDi
 {
     protected override bool Handle(AutoFeederDispensePacket packet, IPEndPoint? _)
     {
-        if (!GameState.landPlots.TryGetValue(packet.ID, out var model) || !model.gameObj)
+        if (!GameState.landPlots.TryGetValue(packet.ID, out var model) || model == null)
+            return true;
+
+        // Written to the plot even when the corral is not loaded here, so this save (the host's
+        // included) and a later join feed on the driver's schedule.
+        try
+        {
+            model.nextFeedingTime = packet.NextFeedingTime;
+            model.remainingFeedOperations = packet.RemainingFeedOperations;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not set the feeder schedule of {packet.ID}: {ex.Message}");
+        }
+
+        if (!model.gameObj)
             return true;
 
         var feeder = model.gameObj.GetComponentInChildren<SlimeFeeder>();

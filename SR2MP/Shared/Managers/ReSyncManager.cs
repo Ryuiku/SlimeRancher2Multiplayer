@@ -128,6 +128,7 @@ internal sealed class ReSyncManager
         SendTreasurePodsPacket(endPoint);
         SendUpgradesPacket(endPoint);
         SendDroneResourcesPacket(endPoint);
+        SendRanchSimulationPackets(endPoint);
         SendActorsPacket(endPoint, PlayerIdGenerator.GetPlayerIDNumber(playerId));
         SendGadgetLinksPacket(endPoint);
         SendTeleporterLinksPacket(endPoint);
@@ -248,6 +249,7 @@ internal sealed class ReSyncManager
             SendConversationsPacket(client.EndPoint);
             SendWeatherPacket(client.EndPoint);
             SendDroneResourcesPacket(client.EndPoint);
+            SendRanchSimulationPackets(client.EndPoint);
             SendActorsPacket(client.EndPoint, PlayerIdGenerator.GetPlayerIDNumber(client.PlayerId));
             SendGadgetLinksPacket(client.EndPoint);
             SendTeleporterLinksPacket(client.EndPoint);
@@ -410,6 +412,30 @@ internal sealed class ReSyncManager
         catch (Exception ex)
         {
             SrLogger.LogWarning($"Could not send the shop: {ex.Message}");
+        }
+    }
+
+    // How far each ranch area has been simulated in the host's world (and who simulates it), and
+    // the growth of every garden and resource spawner in the host's save. World state, so it goes
+    // before the actors. Each part on its own: one that cannot be read is left out.
+    private static void SendRanchSimulationPackets(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(NetworkRanchCellManager.CreateSnapshot(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the ranch area times: {ex.Message}");
+        }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkGardenManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the resource spawners: {ex.Message}");
         }
     }
 

@@ -88,6 +88,26 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             SrLogger.LogError($"Error sending the shop: {ex}");
         }
 
+        // How far the ranch areas awake here have been simulated, and who runs their catch-up
+        try
+        {
+            SR2MP.Shared.Managers.NetworkRanchCellManager.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending the ranch area times: {ex}");
+        }
+
+        // Market prices on the host after a sale
+        try
+        {
+            SR2MP.Shared.Managers.MarketPriceSync.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending market prices: {ex}");
+        }
+
         // Process client packets
         while (clientPacketQueue.TryDequeue(out var clientCache))
         {

@@ -139,6 +139,18 @@ internal sealed class NetworkGarden : MonoBehaviour
         }
 
         registered = true;
+
+        // Growth another player simulated while this garden had no saved data here yet. Written
+        // to the data directly: the host's gardens start as its own, so ApplyUpdate would skip it.
+        if (NetworkGardenManager.TakePendingState(Id!, out var pending))
+        {
+            garden._model.nextSpawnTime = pending.NextSpawnTime;
+            garden._model.storedWater = pending.StoredWater;
+            garden._model.nextSpawnRipens = pending.NextSpawnRipens;
+            CacheState(pending.NextSpawnTime, pending.StoredWater, pending.NextSpawnRipens);
+            SrLogger.LogGarden($"Garden '{Id}' got the growth sent while it was not loaded");
+        }
+
         NetworkGardenManager.Register(this);
         ApplySimulationGate();
 
@@ -303,7 +315,8 @@ internal sealed class NetworkGarden : MonoBehaviour
             GardenId = Id!,
             NextSpawnTime = garden._model.nextSpawnTime,
             StoredWater = garden._model.storedWater,
-            NextSpawnRipens = garden._model.nextSpawnRipens
+            NextSpawnRipens = garden._model.nextSpawnRipens,
+            Position = garden._model.pos
         };
     }
 
