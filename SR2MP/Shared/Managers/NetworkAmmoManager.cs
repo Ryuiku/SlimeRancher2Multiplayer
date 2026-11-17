@@ -108,7 +108,7 @@ internal static class NetworkAmmoManager
         warpDepotAmmoByActorId.Clear();
     }
 
-    private static void RegisterAmmoPointer(this AmmoSlotManager ammo, string id)
+    internal static void RegisterAmmoPointer(this AmmoSlotManager ammo, string id)
     {
         ammoToID[ammo.Pointer] = id;
         IDToAmmo[id] = ammo;
@@ -177,7 +177,17 @@ internal static class NetworkAmmoManager
 
         if (sprinkle != null)
         {
-            ammo.RegisterAmmoPointer($"{sprinkle!.GetComponent<IdHandler>().Id}_{siloStorage.AmmoSetReference.name}");
+            // The canister's own id, the same on every machine. Its IdHandler is not always on the
+            // same object and it may have no ammo set reference; both used to throw here and leave
+            // the canister out of sync. Its SetModel patch registers it the same way.
+            var key = NetworkSprinkleCanisterManager.AmmoKey(sprinkle);
+            if (key == null)
+            {
+                SrLogger.LogWarning($"Sprinkle canister has no id yet: {siloStorage.name}");
+                yield break;
+            }
+
+            ammo.RegisterAmmoPointer(key);
         }
     }
 

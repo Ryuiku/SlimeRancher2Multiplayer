@@ -151,15 +151,21 @@ internal sealed partial class NetworkActorManager
             if (!gameModel)
                 continue;
 
+            SR2MP.Shared.Utils.SceneLoadTrace.FlushHandledDuringLoad();
+            SR2MP.Shared.Utils.SceneLoadTrace.Record(
+                $"Zone loaded: {SystemContext.Instance.SceneLoader.CurrentSceneGroup?.name ?? "?"}, rebuilding actors ({Actors.Count} known, {DeferredWorldChanges.Count} held-back changes)");
+
             try
             {
                 RebuildActorsForCurrentScene(gameModel!);
+                SR2MP.Shared.Utils.SceneLoadTrace.Record($"Actors rebuilt ({Actors.Count} known)");
             }
             catch (Exception ex)
             {
                 // This loop must survive: if it stops, nothing in a newly loaded zone is synced for
                 // the rest of the session.
                 HandlingPacket = false;
+                SR2MP.Shared.Utils.SceneLoadTrace.Record($"Rebuilding actors failed: {ex.Message}");
                 SrLogger.LogError($"Rebuilding actors after a zone load failed: {ex}");
             }
 
@@ -355,6 +361,8 @@ internal sealed partial class NetworkActorManager
     }
 
     internal static void ClearDeferredWorldChanges() => DeferredWorldChanges.Clear();
+
+    internal static int DeferredWorldChangeCount => DeferredWorldChanges.Count;
 
     internal static bool IsSceneLoadingNow => IsSceneLoading();
 

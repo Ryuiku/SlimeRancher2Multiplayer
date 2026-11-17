@@ -52,7 +52,10 @@ internal sealed partial class NetworkActorManager
 
         GameState.identifiables[actorId] = model;
         if (GameState.identifiablesByIdent.TryGetValue(type, out var actors))
-            actors.Add(model);
+        {
+            // Listed twice, the game could build the actor twice when this zone loads here.
+            if (!actors.Contains(model)) actors.Add(model);
+        }
         else
         {
             actors = new CppCollections.List<IdentifiableModel>();
@@ -590,7 +593,7 @@ internal sealed partial class NetworkActorManager
         GameState.identifiables[actorId] = model;
         if (GameState.identifiablesByIdent.TryGetValue(type, out var actors))
         {
-            actors.Add(model);
+            if (!actors.Contains(model)) actors.Add(model);
         }
         else
         {

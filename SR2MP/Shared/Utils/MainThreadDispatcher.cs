@@ -78,6 +78,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             SrLogger.LogError($"Error sending a delayed world snapshot: {ex}");
         }
 
+        // The host's Caretaker shop after a restock
+        try
+        {
+            SR2MP.Shared.Managers.NetworkShopManager.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending the shop: {ex}");
+        }
+
         // Process client packets
         while (clientPacketQueue.TryDequeue(out var clientCache))
         {

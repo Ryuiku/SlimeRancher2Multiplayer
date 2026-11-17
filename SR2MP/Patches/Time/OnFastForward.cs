@@ -37,7 +37,16 @@ internal static class OnFastForward
 
     public static void Postfix([HarmonyArgument(0)] double fastForwardUntil)
     {
-        NetworkGardenManager.RestoreAfterTimeSkip();
+        // Each part on its own: an exception leaving here would break the game's time skip.
+        try
+        {
+            NetworkGardenManager.RestoreAfterTimeSkip();
+        }
+        catch (Exception ex)
+        {
+            SR2MP.Shared.Utils.SceneLoadTrace.Record($"Restoring gardens after a time skip threw: {ex.Message}");
+            SrLogger.LogWarning($"Could not restore gardens after a time skip: {ex}");
+        }
 
         if (HandlingPacket)
             return;
@@ -46,11 +55,18 @@ internal static class OnFastForward
         if (!NetworkActorManager.CanSendActorChanges)
             return;
 
-        var packet = new FastForwardPacket
+        try
         {
-            Time = fastForwardUntil
-        };
+            var packet = new FastForwardPacket
+            {
+                Time = fastForwardUntil
+            };
 
-        Main.SendToAllOrServer(packet);
+            Main.SendToAllOrServer(packet);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not share a time skip: {ex}");
+        }
     }
 }

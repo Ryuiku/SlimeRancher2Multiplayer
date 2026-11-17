@@ -142,6 +142,7 @@ internal sealed class ReSyncManager
         SendEventsRaisedPacket(endPoint);
         SendTornadosPacket(endPoint);
         SendUnlocksPacket(endPoint);
+        SendSanctuaryPackets(endPoint);
 
         SrLogger.LogMessage($"Player {playerId} resynced!", $"Player {playerId} ({endPoint}) resynced!");
     }
@@ -252,6 +253,7 @@ internal sealed class ReSyncManager
             SendDroneCloudPacket(client.EndPoint);
             SendTornadosPacket(client.EndPoint);
             SendUnlocksPacket(client.EndPoint);
+            SendSanctuaryPackets(client.EndPoint);
         }
 
         SrLogger.LogMessage($"Resynced {clients.Count} players!");
@@ -374,6 +376,41 @@ internal sealed class ReSyncManager
 
     // Palettes, sanctuary themes, slime appearances, secret styles and rewards kiosk progress:
     // kept per player by the game, shared from the host's save here.
+    // Sanctuary rooms (themes, pre-placed gadgets), sprinkle canisters and the Caretaker shop.
+    // Sent after the actors, which the pre-placed gadgets refer to. Each part on its own: one
+    // that cannot be read is left out rather than breaking the join.
+    private static void SendSanctuaryPackets(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(NetworkSanctuaryManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the sanctuary rooms: {ex.Message}");
+        }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkSprinkleCanisterManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the sprinkle canisters: {ex.Message}");
+        }
+
+        try
+        {
+            var shop = NetworkShopManager.CreateStatePacket();
+            if (shop != null)
+                Main.Server.SendToClient(shop, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the shop: {ex.Message}");
+        }
+    }
+
     private static void SendUnlocksPacket(IPEndPoint client)
     {
         try

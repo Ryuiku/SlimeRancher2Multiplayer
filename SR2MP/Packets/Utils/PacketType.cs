@@ -114,6 +114,12 @@ internal enum PacketType : byte
     UnlockShared = 124,           // Both Ways                                    Low (manual)                          A vac palette, sanctuary theme, slime appearance or secret style unlocked
     InitialUnlocks = 125,         // Server -> Client                             Low (depends on join)                 Palettes, themes, appearances, secret styles and rewards kiosk progress on join
     EndGameRewardProgress = 126,  // Both Ways                                    Low (manual)                          Rewards kiosk progress changed
+    SanctuaryRoom = 160,          // Both Ways                                    Low (manual)                          A sanctuary room's theme or pre-placed gadget changed
+    InitialSanctuary = 161,       // Server -> Client                             Low (depends on join)                 Sanctuary room themes and pre-placed gadgets on join
+    ShopPurchase = 162,           // Both Ways                                    Low (manual)                          Caretaker shop purchase count changed
+    ShopState = 163,              // Server -> Client                             Low (restock, join)                   Caretaker shop stock seeds and purchase counts
+    SprinkleCanister = 164,       // Both Ways                                    Medium (producer only)                Sprinkle canister production state and contents
+    InitialSprinkleCanisters = 165, // Server -> Client                           Low (depends on join)                 Sprinkle canisters on join
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression
