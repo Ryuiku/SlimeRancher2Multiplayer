@@ -126,6 +126,8 @@ internal enum PacketType : byte
     InitialResourceSpawners = 129, // Server -> Client                            Low (depends on join)                 Garden and resource spawner growth from the host's save
     ExplorerProgramState = 130,   // Both Ways                                    Low (on plan change)                  An explorer drone program's next collection, from the game that runs it
     DroneExtractionQueue = 131,   // Both Ways                                    Low (on extraction)                   A station's pending Quantum Cloud extraction items (absolute)
+    PrismaDisruption = 132,       // Server -> Client                             Low (join, on change, every 2 min)    The host's Labyrinth disruption forecast, the only one any game runs on
+    PrismaGroupUnlock = 133,      // Client -> Server                             Low (manual)                          A client unlocked a disruption forecast group; the host runs the unlock
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

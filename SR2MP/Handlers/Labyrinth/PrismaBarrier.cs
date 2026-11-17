@@ -11,6 +11,14 @@ internal sealed class PrismaBarrierHandler : BasePacketHandler<PrismaBarrierPack
 {
     protected override bool Handle(PrismaBarrierPacket packet, IPEndPoint? _)
     {
+        // Barrier times come from the host only. A client on an older build may still send its
+        // own; it is neither applied nor passed on.
+        if (IsServerSide)
+        {
+            SrLogger.LogDebug($"Ignored a prisma barrier time from a client ({packet.ID})");
+            return false;
+        }
+
         HandlingPacket = true;
         try
         {

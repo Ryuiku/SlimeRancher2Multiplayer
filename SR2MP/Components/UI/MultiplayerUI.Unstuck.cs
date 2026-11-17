@@ -271,6 +271,7 @@ internal sealed partial class MultiplayerUI
     }
 
     private float staleFreezeLastTry = -999f;
+    private float staleFreezeFreeSeconds;
     private const float StaleFreezeSeconds = 30f;
 
     // The controller was frozen with SetFreeze(true) and nothing that freezes on purpose (a lock,
@@ -280,15 +281,25 @@ internal sealed partial class MultiplayerUI
         try
         {
             if (!FreezeLog.ControllerFrozen || !InSession || !IsInGameplay())
+            {
+                staleFreezeFreeSeconds = 0;
                 return;
-
-            var now = UnityEngine.Time.realtimeSinceStartup;
-            var frozenFor = now - FreezeLog.FrozenSince;
-            if (frozenFor < StaleFreezeSeconds || now - staleFreezeLastTry < StaleFreezeSeconds)
-                return;
+            }
 
             if (IsUiHoldingPlayer() || IsLocalPlayerLocked(out _) || HasActiveCutscene()
                 || SceneContext.Instance.TimeDirector.IsFastForwarding())
+            {
+                staleFreezeFreeSeconds = 0;
+                return;
+            }
+
+            // Give the game a few seconds of its own after a lock or cutscene ends (wake-up).
+            staleFreezeFreeSeconds += UnityEngine.Time.unscaledDeltaTime;
+
+            var now = UnityEngine.Time.realtimeSinceStartup;
+            var frozenFor = now - FreezeLog.FrozenSince;
+            if (frozenFor < StaleFreezeSeconds || staleFreezeFreeSeconds < 5f
+                || now - staleFreezeLastTry < StaleFreezeSeconds)
                 return;
 
             staleFreezeLastTry = now;

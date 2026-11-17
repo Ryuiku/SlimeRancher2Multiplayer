@@ -137,6 +137,7 @@ internal sealed class ReSyncManager
         SendPuzzleSlotsPacket(endPoint);
         SendPlortDepositorsPacket(endPoint);
         SendPrismaBarriersPacket(endPoint);
+        SendPrismaDisruptionPacket(endPoint);
         SendDroneCloudPacket(endPoint);
         SendComponentsPacket(endPoint);
         SendConversationsPacket(endPoint);
@@ -202,6 +203,7 @@ internal sealed class ReSyncManager
         var puzzleSlotsPacket       = CreatePuzzleSlotsPacket();
         var plortDepositorsPacket   = CreatePlortDepositorsPacket();
         var prismaBarriersPacket    = CreatePrismaBarriersPacket();
+        var prismaDisruptionPacket  = NetworkPrismaManager.CreatePacket();
         var componentsPacket        = CreateComponentsPacket();
         var eventsRaisedPacket      = CreateEventsRaisedPacket();
 
@@ -242,6 +244,8 @@ internal sealed class ReSyncManager
             Main.Server.SendToClient(puzzleSlotsPacket,     client.EndPoint);
             Main.Server.SendToClient(plortDepositorsPacket, client.EndPoint);
             Main.Server.SendToClient(prismaBarriersPacket,  client.EndPoint);
+            if (prismaDisruptionPacket != null)
+                Main.Server.SendToClient(prismaDisruptionPacket, client.EndPoint);
             Main.Server.SendToClient(componentsPacket,      client.EndPoint);
             Main.Server.SendToClient(eventsRaisedPacket,  client.EndPoint);
 
@@ -604,6 +608,14 @@ internal sealed class ReSyncManager
 
     private static void SendPrismaBarriersPacket(IPEndPoint client)
         => Main.Server.SendToClient(CreatePrismaBarriersPacket(), client);
+
+    // The host's Labyrinth disruption forecast; the joiner's own save rolled a different one.
+    private static void SendPrismaDisruptionPacket(IPEndPoint client)
+    {
+        var packet = NetworkPrismaManager.CreatePacket();
+        if (packet != null)
+            Main.Server.SendToClient(packet, client);
+    }
 
     private static InitialPrismaBarriersPacket CreatePrismaBarriersPacket()
     {
