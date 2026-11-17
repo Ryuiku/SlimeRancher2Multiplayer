@@ -116,6 +116,12 @@ internal static class NetworkPlortDepositorManager
         if (!model._gameObject)
             return;
 
+        // The player who deposited already gave out the rewards this unlocks. Before
+        // NotifyParticipants, which may already start the unlock.
+        var loadedDepositor = model._gameObject.GetComponent<PlortDepositor>();
+        if (loadedDepositor)
+            SuppressReplayedRewards(loadedDepositor!, amountDeposited);
+
         // Each step on its own: one of them failing must not leave the door shut.
         try
         {
@@ -170,6 +176,7 @@ internal static class NetworkPlortDepositorManager
         try
         {
             model.AmountDeposited = amountDeposited;
+            SuppressReplayedRewards(depositor, amountDeposited);
             depositor.OnFilledChangedFromModel();
             model.NotifyParticipants();
         }
@@ -177,5 +184,20 @@ internal static class NetworkPlortDepositorManager
         {
             HandlingPacket = false;
         }
+    }
+
+    private static void SuppressReplayedRewards(PlortDepositor depositor, int amountDeposited)
+    {
+        try
+        {
+            if (amountDeposited >= depositor.FillAmount)
+                NetworkRewarders.Suppress(depositor._rewarder);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not check plort depositor reward: {ex.Message}");
+        }
+
+        NetworkRewarders.SuppressIfUnlocking(depositor._puzLockable);
     }
 }

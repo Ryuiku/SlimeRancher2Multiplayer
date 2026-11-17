@@ -8,12 +8,68 @@ namespace SR2MP.Handlers.TreasurePod;
 [PacketHandler((byte)PacketType.TreasurePod)]
 internal sealed class TreasurePodHandler : BasePacketHandler<TreasurePodPacket>
 {
+    // When this game last opened each pod, to spot two players opening one at the same moment.
+    internal static readonly Dictionary<string, float> LocalOpenTimes = new();
+
+    // Pods another player opened (live or in the host's world). The game must not run their
+    // rewards here any more.
+    internal static readonly HashSet<string> RemotelyOpened = new();
+
+    private const float SameMomentWindow = 5f;
+
+    static TreasurePodHandler()
+    {
+        Main.Server.OnServerStarted +=      ClearSession;
+        Main.Client.OnConnected     += _ => ClearSession();
+        Main.Client.OnDisconnected  +=      ClearSession;
+    }
+
+    private static void ClearSession()
+    {
+        LocalOpenTimes.Clear();
+        RemotelyOpened.Clear();
+    }
+
     protected override bool Handle(TreasurePodPacket packet, IPEndPoint? _)
     {
         if (!string.IsNullOrEmpty(packet.ID))
+        {
+            ResolveSameMomentOpen(packet);
             ApplyState(packet.ID, Il2Cpp.TreasurePod.State.OPEN, false);
+        }
         UnlockAppearance(packet);
         return true;
+    }
+
+    /// <summary>
+    /// Both players pressed the same pod before either heard of the other, so both games queued
+    /// its loot. The lower player id keeps theirs, on every machine alike; the other side empties
+    /// its queue before the pod's opening delay lets anything out.
+    /// </summary>
+    private static void ResolveSameMomentOpen(TreasurePodPacket packet)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(packet.OpenerId) || packet.OpenerId == LocalID)
+                return;
+
+            if (!LocalOpenTimes.TryGetValue(packet.ID, out var openedAt)
+                || UnityEngine.Time.time - openedAt > SameMomentWindow)
+                return;
+
+            if (string.CompareOrdinal(packet.OpenerId, LocalID) >= 0)
+                return;
+
+            if (GameState.pods.TryGetValue(packet.ID, out var model) && model?.spawnQueue != null)
+                model.spawnQueue.Clear();
+
+            LocalOpenTimes.Remove(packet.ID);
+            SrLogger.LogMessage($"Pod {packet.ID} was opened at the same moment by {packet.OpenerId}; their loot is used.");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not settle pod {packet.ID} opened by two players: {ex.Message}");
+        }
     }
 
     private static void UnlockAppearance(TreasurePodPacket packet)
@@ -136,6 +192,9 @@ internal sealed class TreasurePodHandler : BasePacketHandler<TreasurePodPacket>
 
             if (model == null)
                 return;
+
+            if (state == Il2Cpp.TreasurePod.State.OPEN)
+                RemotelyOpened.Add(podKey);
 
             if (model.state == null)
                 model.state = new ObservableValue<Il2Cpp.TreasurePod.State>(state);

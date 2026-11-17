@@ -111,6 +111,9 @@ internal static class NetworkPuzzleSlotManager
         var slot = model.gameObj.GetComponent<PuzzleSlot>();
         if (slot && filled)
         {
+            // The player who filled the slot already gave out the lock's reward.
+            NetworkRewarders.SuppressIfUnlocking(slot!._puzLockable);
+
             slot!.ActivateOnFill();
             slot!._puzLockable?.NotifySlotChanged(false);
         }
@@ -139,7 +142,10 @@ internal static class NetworkPuzzleSlotManager
             model.filled = filled;
 
             if (filled)
+            {
+                NetworkRewarders.SuppressIfUnlocking(slot._puzLockable);
                 slot.ActivateOnFill();
+            }
 
             model.NotifyParticipants();
         }

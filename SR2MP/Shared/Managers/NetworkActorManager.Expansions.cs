@@ -16,6 +16,10 @@ internal sealed partial class NetworkActorManager
         if (!actor) return;
         if (actor.GetComponent<NetworkActor>() != null) return;
 
+        // Same rule as OnActorSpawn: a joiner without the host's world would announce an id that
+        // belongs to another actor on the host.
+        if (!CanSendActorChanges) return;
+
         var identifiableActor = actor.GetComponent<IdentifiableActor>();
         if (!identifiableActor) return;
 
