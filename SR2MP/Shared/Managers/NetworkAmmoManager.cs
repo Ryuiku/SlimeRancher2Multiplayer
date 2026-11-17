@@ -104,7 +104,11 @@ internal static class NetworkAmmoManager
 
     public static AmmoSlotManager? GetAmmo(string? id) => IDToAmmo!.GetValueOrDefault(id);
 
-    private static void ClearAmmoCache()
+    // Also called when the main menu loads: the storages of the save that was left would still
+    // answer for their ids (a change "applied" to a dead object instead of the next world's saved
+    // model), and a freed native pointer can come back as an unrelated slot of the next world.
+    // Every storage of the next world registers again as it loads.
+    internal static void ClearAmmoCache()
     {
         ammoToID.Clear();
         IDToAmmo.Clear();

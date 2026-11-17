@@ -264,6 +264,7 @@ public sealed class Main : StarlightExpansionV01
 
                 // The save is left: actor ids repeat in the next one.
                 SR2MP.Shared.Managers.NetworkActorManager.PendingRadiancy.Clear();
+                SR2MP.Shared.Managers.NetworkAmmoManager.ClearAmmoCache();
 
                 InitializePlayer("BeatrixMainMenu", 0.85f);
                 break;

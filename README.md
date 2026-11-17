@@ -13,7 +13,7 @@
 |  Player Movement  |   🟩   |                                    Fully functional                                     |
 | Player Animations |   🟩   |                                    Fully functional                                     |
 |  Player Sound FX  |   🟩   |                                    Fully functional                                     |
-| Player Visual FX  |   🟨   |                        Vac Shockwave + Vac suction trail missing                        |
+| Player Visual FX  |   🟨   |   Vac suction stream & Pulse Wave added (untested); remote vac spin/ammo dial missing   |
 | Player Inventory  |   🟥   |                  Not stored on the server, use the same save to rejoin                  |
 | Initial Save load |   🟩   |      Everything that is ___currently___ synchronised will be loaded on Player join      |
 |      Slimes       |   🟩   |                          Fully functional (Including Radiant)                           |
@@ -40,8 +40,8 @@
 |     Lightning     |   🟩   |                                    Fully functional                                     |
 |     Tornados      |   🟩   |                                    Fully functional                                     |
 |       Time        |   🟩   |                                    Fully functional                                     |
-|  Gray Labyrinth   |   🟨   | Partially functional (Switches, Prisma Barriers, Shadow Plort Depositors, Prisma Gates) |
-|   The Sanctuary   |   🟨   |                   Partially functional (unlock via robot & sprinkles)                   |
+|  Gray Labyrinth   |   🟨   | Switches, Barriers, Depositors, Gates, Rewards, Disruption; Stabilizers & Beams missing |
+|   The Sanctuary   |   🟨   |  Unlock, sprinkles, canisters, themes, rooms, shop; Caretaker & decorations per player  |
 | NPC Conversations |   🟩   |                                    Fully functional                                     |
 |  Multiplayer API  |   🟩   |                                    Fully functional                                     |
 
