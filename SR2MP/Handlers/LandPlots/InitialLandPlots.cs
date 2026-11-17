@@ -96,6 +96,9 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
 
                 case InitialLandPlotsPacket.SiloData silo:
                 {
+                    if (!HasSlots(silo.Ammo))
+                        break;
+
                     var ammo = silo.Ammo.ToGameAmmo();
                     model.siloAmmo[SiloAmmo] = ammo._ammoModel;
                     model.siloStorageIndices = Array.ConvertAll(silo.SelectedSlots.ToArray(), input => (int)input);
@@ -118,6 +121,9 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
                     var ammoType = plot.Type == LandPlot.Id.COOP
                         ? FeederAmmo
                         : PlortCollectorAmmo;
+                    if (!HasSlots(pond.CollectorAmmo))
+                        break;
+
                     var collectorAmmo = pond.CollectorAmmo!.ToGameAmmo();
                     model.siloAmmo[ammoType] = collectorAmmo._ammoModel;
 
@@ -135,11 +141,15 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
 
                 case InitialLandPlotsPacket.CorralData corral:
                 {
-                    var plortCollectorAmmo = corral.PlortCollectorAmmo.ToGameAmmo();
-                    model.siloAmmo[PlortCollectorAmmo] = plortCollectorAmmo._ammoModel;
+                    // A corral without a plort collector or feeder upgrade has no storage for it on
+                    // the host. A storage with no slots made the game throw and the plot failed.
+                    var plortCollectorAmmo = HasSlots(corral.PlortCollectorAmmo) ? corral.PlortCollectorAmmo.ToGameAmmo() : null;
+                    if (plortCollectorAmmo != null)
+                        model.siloAmmo[PlortCollectorAmmo] = plortCollectorAmmo._ammoModel;
 
-                    var feederAmmo = corral.AutoFeederAmmo.ToGameAmmo();
-                    model.siloAmmo[FeederAmmo] = feederAmmo._ammoModel;
+                    var feederAmmo = HasSlots(corral.AutoFeederAmmo) ? corral.AutoFeederAmmo.ToGameAmmo() : null;
+                    if (feederAmmo != null)
+                        model.siloAmmo[FeederAmmo] = feederAmmo._ammoModel;
 
                     model.feederCycleSpeed = (SlimeFeeder.FeedSpeed)corral.AutoFeederSpeed;
 
@@ -149,13 +159,13 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
                     {
                         switch (corralStorage.AmmoSetReference.Guid)
                         {
-                            case PlortCollectorAmmo:
+                            case PlortCollectorAmmo when plortCollectorAmmo != null:
                                 corralStorage.Ammo = plortCollectorAmmo;
                                 corralStorage.SetModel(model);
                                 corralStorage.Ammo.ApplySlotData(corral.PlortCollectorAmmo);
                                 break;
 
-                            case FeederAmmo:
+                            case FeederAmmo when feederAmmo != null:
                                 corralStorage.Ammo = feederAmmo;
                                 corralStorage.SetModel(model);
                                 corralStorage.Ammo.ApplySlotData(corral.AutoFeederAmmo);
@@ -185,14 +195,15 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
 
                 case InitialLandPlotsPacket.IncineratorData incinerator:
                 {
-                    var incineratorAmmo = incinerator.PlortCollectorAmmo!.ToGameAmmo();
-                    model.siloAmmo[PlortCollectorAmmo] = incineratorAmmo._ammoModel;
+                    var incineratorAmmo = HasSlots(incinerator.PlortCollectorAmmo) ? incinerator.PlortCollectorAmmo!.ToGameAmmo() : null;
+                    if (incineratorAmmo != null)
+                        model.siloAmmo[PlortCollectorAmmo] = incineratorAmmo._ammoModel;
                     try { model.ashUnits = incinerator.AshLevel; } catch { /* ignored */ }
 
                     if (!model.gameObj) break;
 
                     var incineratorStorage = model.gameObj.GetComponentInChildren<SiloStorage>(true);
-                    if (incineratorStorage)
+                    if (incineratorStorage && incineratorAmmo != null)
                     {
                         incineratorStorage.Ammo = incineratorAmmo;
                         incineratorStorage.SetModel(model);
@@ -216,4 +227,8 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
 
         return false;
     }
+
+    // The host had nothing to describe for this storage (not built, or never loaded there). The
+    // storage the game made for the plot is left as it is.
+    private static bool HasSlots(SR2MP.Packets.Ammo.NetworkAmmo? ammo) => ammo?.AmmoSlots != null && ammo.AmmoSlots.Count > 0;
 }

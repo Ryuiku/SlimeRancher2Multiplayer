@@ -43,20 +43,34 @@ internal static class NetworkAmmoManager
     
     public static void ApplySlotData(this AmmoSlotManager ammo, NetworkAmmo networkAmmo)
     {
-        foreach (var (slotIndex, networkSlot) in networkAmmo.AmmoSlots)
+        // The host leaves out slots it cannot describe, so its slot numbers can have gaps (0, 2, 3)
+        // while ToGameAmmo builds the slots one after another. Using the host's numbers here ran
+        // past the end of the storage and the whole plot failed to load.
+        var position = 0;
+        foreach (var (_, networkSlot) in networkAmmo.AmmoSlots)
         {
-            var ammoSlot = ammo.Slots[slotIndex];
-            if (ammoSlot != null)
+            var index = position++;
+
+            var slots = ammo.Slots;
+            if (slots != null && index < slots.Length)
             {
-                ammoSlot.Count = networkSlot.Count;
-                ammoSlot.MaxCount = networkSlot.MaxCount;
+                var ammoSlot = slots[index];
+                if (ammoSlot != null)
+                {
+                    ammoSlot.Count = networkSlot.Count;
+                    ammoSlot.MaxCount = networkSlot.MaxCount;
+                }
             }
 
-            var ammoModelSlot = ammo._ammoModel?.Slots[slotIndex];
-            if (ammoModelSlot != null)
+            var modelSlots = ammo._ammoModel?.Slots;
+            if (modelSlots != null && index < modelSlots.Length)
             {
-                ammoModelSlot.Count = networkSlot.Count;
-                ammoModelSlot.MaxCount = networkSlot.MaxCount;
+                var ammoModelSlot = modelSlots[index];
+                if (ammoModelSlot != null)
+                {
+                    ammoModelSlot.Count = networkSlot.Count;
+                    ammoModelSlot.MaxCount = networkSlot.MaxCount;
+                }
             }
         }
     }
