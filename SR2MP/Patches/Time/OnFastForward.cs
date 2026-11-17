@@ -24,7 +24,14 @@ internal static class OnFastForward
                 && RunningTarget > fastForwardUntil
                 && RunningTarget > __instance._worldModel.worldTime)
             {
+                SR2MP.Shared.Utils.FreezeLog.Record(
+                    $"Time skip to {fastForwardUntil:F0} asked while one to {RunningTarget:F0} runs: keeping the later one", important: true);
                 fastForwardUntil = RunningTarget;
+            }
+            else
+            {
+                SR2MP.Shared.Utils.FreezeLog.Record(
+                    $"Time skip to {fastForwardUntil:F0} ({(fastForwardUntil - __instance._worldModel.worldTime) / 3600:F1} game h){(HandlingPacket ? " from another player" : string.Empty)}");
             }
         }
         catch

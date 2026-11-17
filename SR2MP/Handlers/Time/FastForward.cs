@@ -24,6 +24,7 @@ internal sealed class BaseFastForwardHandler : BasePacketHandler<FastForwardPack
         // would age the whole world by days.
         if (packet.Time - now > MaxSkipAhead)
         {
+            SR2MP.Shared.Utils.FreezeLog.Record($"Ignored time skip from another player: {now:F0} -> {packet.Time:F0} ({(packet.Time - now) / 3600:F1} h)");
             SrLogger.LogWarning($"Ignored a time skip of {(packet.Time - now) / 3600:F1} game hours from another player.");
             return false;
         }
@@ -32,7 +33,12 @@ internal sealed class BaseFastForwardHandler : BasePacketHandler<FastForwardPack
         // a sleeping or knocked-out player in place until its own skip reaches the wake-up time, so
         // a shorter skip from another player must not replace it (on any machine, or clocks split).
         if (timeDirector.IsFastForwarding() && SR2MP.Patches.Time.OnFastForward.RunningTarget >= packet.Time)
+        {
+            SR2MP.Shared.Utils.FreezeLog.Record($"Kept running skip; time skip from another player: {now:F0} -> {packet.Time:F0} ({(packet.Time - now) / 3600:F1} h)");
             return true;
+        }
+
+        SR2MP.Shared.Utils.FreezeLog.Record($"Applied time skip from another player: {now:F0} -> {packet.Time:F0} ({(packet.Time - now) / 3600:F1} h)", important: true);
 
         HandlingPacket = true;
         try

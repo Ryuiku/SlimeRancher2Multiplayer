@@ -329,7 +329,7 @@ internal partial class NetworkPlayer : MonoBehaviour
         {
             // Turned off and on again so the collider follows the moved avatar.
             collider.enabled = false;
-            collider.enabled = IsLiveAvatar();
+            collider.enabled = IsLiveAvatar() && !OverlapsLocalPlayer();
         }
 
         UpdateAvatarVisibility();
@@ -370,6 +370,35 @@ internal partial class NetworkPlayer : MonoBehaviour
         var localSceneGroup = NetworkSceneManager.GetPersistentID(
             SystemContext.Instance.SceneLoader._currentSceneGroup);
         return localSceneGroup >= 0 && model.SceneGroup >= 0 && model.SceneGroup != localSceneGroup;
+    }
+
+    private bool overlappingLocalPlayer;
+
+    // Standing on the same spot as the local player (same teleporter exit, same doorway). The
+    // local controller already ignores this avatar, but a solid capsule inside the local player
+    // still shoves slimes and items around both of you, so it stays off until you step apart.
+    private bool OverlapsLocalPlayer()
+    {
+        var overlapping = false;
+        try
+        {
+            var localPlayer = sceneContext.player;
+            if (localPlayer)
+            {
+                var offset = transform.position - localPlayer!.transform.position;
+                overlapping = new Vector2(offset.x, offset.z).sqrMagnitude < 1f && Mathf.Abs(offset.y) < 2f;
+            }
+        }
+        catch
+        {
+            // keep the avatar solid as before
+        }
+
+        if (overlapping && !overlappingLocalPlayer)
+            SrLogger.LogDebug($"Player {ID}'s avatar overlaps the local player; its collider is off until they step apart");
+
+        overlappingLocalPlayer = overlapping;
+        return overlapping;
     }
 
     private bool IsInLocalSceneGroup()

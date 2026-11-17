@@ -197,6 +197,8 @@ public sealed class Main : StarlightExpansionV01
         // A player's own look, never the host's world: sent from the moment of joining.
         SR2MP.Packets.Utils.PacketType.PlayerCosmetics;
 
+    private static void ResetSessionPlayerState() => IsInRanchHouse = false;
+
     /// <inheritdoc/>
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)
     {
@@ -215,6 +217,12 @@ public sealed class Main : StarlightExpansionV01
                 Object.DontDestroyOnLoad(ui.gameObject);
 
                 Server.OnServerStarted += () => CheatsEnabled = AllowCheats;
+
+                // The ranch house screen sets a flag that makes a client ignore the host clock. If
+                // that screen never reported closing, the flag would carry into the next session.
+                Server.OnServerStarted += ResetSessionPlayerState;
+                Client.OnConnected += _ => ResetSessionPlayerState();
+                Client.OnDisconnected += ResetSessionPlayerState;
 
                 Application.quitting += new Action(() =>
                 {
@@ -250,6 +258,9 @@ public sealed class Main : StarlightExpansionV01
                 {
                     SrLogger.LogError($"Could not end the session at the main menu: {ex.Message}");
                 }
+
+                // The player object of that world is gone, and with it any freeze on it.
+                SR2MP.Shared.Utils.FreezeLog.ResetControllerState();
 
                 // The save is left: actor ids repeat in the next one.
                 SR2MP.Shared.Managers.NetworkActorManager.PendingRadiancy.Clear();
