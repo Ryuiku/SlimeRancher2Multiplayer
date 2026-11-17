@@ -2,6 +2,7 @@ using System.Net;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.LandPlots;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.LandPlots;
 
@@ -14,7 +15,9 @@ internal sealed class LandPlotUpgradeHandler : LandPlotUpdateHandler<LandPlotUpg
 {
     protected override bool Handle(LandPlotUpgradePacket packet, IPEndPoint? _)
     {
-        if (!GameState.landPlots.TryGetValue(packet.PlotID, out var model))
+        // A plot this save never loaded gets a model, so the upgrade is there when it loads.
+        var model = NetworkLandPlotManager.GetOrCreateModel(packet.PlotID);
+        if (model == null)
             return true;
 
         model.upgrades.Add(packet.ID);
@@ -42,7 +45,9 @@ internal sealed class NewLandPlotHandler : BasePacketHandler<NewLandPlotPacket>
 {
     protected override bool Handle(NewLandPlotPacket packet, IPEndPoint? _)
     {
-        if (!GameState.landPlots.TryGetValue(packet.PlotID, out var model))
+        // A plot this save never loaded gets a model, so the new plot is there when it loads.
+        var model = NetworkLandPlotManager.GetOrCreateModel(packet.PlotID);
+        if (model == null)
             return true;
 
         model.typeId = packet.ID;

@@ -2,6 +2,7 @@ using System.Net;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.LandPlots;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.LandPlots;
 
@@ -10,7 +11,10 @@ internal sealed class GardenPlantHandler : BasePacketHandler<GardenPlantPacket>
 {
     protected override bool Handle(GardenPlantPacket packet, IPEndPoint? _)
     {
-        var model = GameState.landPlots[packet.ID];
+        // A garden this save never loaded gets a model, so the crop is there when it loads.
+        var model = NetworkLandPlotManager.GetOrCreateModel(packet.ID);
+        if (model == null)
+            return true;
 
         if (packet.ActorType == 9)
         {

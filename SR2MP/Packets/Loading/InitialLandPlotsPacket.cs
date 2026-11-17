@@ -100,11 +100,19 @@ internal sealed class InitialLandPlotsPacket : IPacket
         public NetworkAmmo AutoFeederAmmo;
         public byte AutoFeederSpeed;
 
+        // The feeder's schedule and the collector's next pickup from the host's save.
+        public double NextFeedingTime;
+        public int RemainingFeedOperations;
+        public double CollectorNextTime;
+
         public void Serialise(PacketWriter writer)
         {
             writer.WriteNetObject(PlortCollectorAmmo);
             writer.WriteNetObject(AutoFeederAmmo);
             writer.WriteByte(AutoFeederSpeed);
+            writer.WriteDouble(NextFeedingTime);
+            writer.WritePackedInt(RemainingFeedOperations);
+            writer.WriteDouble(CollectorNextTime);
         }
 
         public void Deserialise(PacketReader reader)
@@ -112,6 +120,9 @@ internal sealed class InitialLandPlotsPacket : IPacket
             PlortCollectorAmmo = reader.ReadNetObject<NetworkAmmo>();
             AutoFeederAmmo = reader.ReadNetObject<NetworkAmmo>();
             AutoFeederSpeed = reader.ReadByte();
+            NextFeedingTime = reader.ReadDouble();
+            RemainingFeedOperations = reader.ReadPackedInt();
+            CollectorNextTime = reader.ReadDouble();
         }
     }
 

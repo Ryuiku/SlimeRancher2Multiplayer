@@ -27,12 +27,17 @@ internal sealed class AmmoAddHandler : BasePacketHandler<AmmoAddPacket>
     {
         var ammo = NetworkAmmoManager.GetAmmo(packet.ID);
 
-        // Not loaded on this machine. The host still passes it on: the other players may have it.
-        if (ammo == null) return;
-
         if (!ActorManager.ActorTypes.TryGetValue(packet.Identifiable, out var ident) || ident == null)
         {
             SrLogger.LogWarning($"AmmoAdd: unknown identifiable type {packet.Identifiable}");
+            return;
+        }
+
+        // Not loaded on this machine: its saved contents are changed instead, so this save (and,
+        // on the host, the next join) has it. The host still passes it on either way.
+        if (ammo == null)
+        {
+            NetworkAmmoManager.TryApplyAddToModel(packet.ID, ident, packet.Count);
             return;
         }
         

@@ -813,7 +813,10 @@ internal sealed class ReSyncManager
                 {
                     AutoFeederSpeed = (byte)plot.feederCycleSpeed,
                     PlortCollectorAmmo = SerializeAmmo(plot.siloAmmo, PlortCollectorAmmo),
-                    AutoFeederAmmo = SerializeAmmo(plot.siloAmmo, FeederAmmo)
+                    AutoFeederAmmo = SerializeAmmo(plot.siloAmmo, FeederAmmo),
+                    NextFeedingTime = plot.nextFeedingTime,
+                    RemainingFeedOperations = plot.remainingFeedOperations,
+                    CollectorNextTime = plot.collectorNextTime
                 },
                 _ => null
             };

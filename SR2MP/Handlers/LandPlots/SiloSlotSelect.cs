@@ -2,6 +2,7 @@
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.LandPlots;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.LandPlots;
 
@@ -10,8 +11,13 @@ internal sealed class SiloSlotSelectHandler : BasePacketHandler<SiloSlotSelectPa
 {
     protected override bool Handle(SiloSlotSelectPacket packet, IPEndPoint? _)
     {
-        var model = GameState.landPlots[packet.ID];
-        model.siloStorageIndices[packet.Side] = packet.Index;
+        var model = NetworkLandPlotManager.GetOrCreateModel(packet.ID);
+        if (model == null)
+            return true;
+
+        var indices = model.siloStorageIndices;
+        if (indices != null && packet.Side < indices.Length)
+            indices[packet.Side] = packet.Index;
 
         if (!model.gameObj) return true;
 
