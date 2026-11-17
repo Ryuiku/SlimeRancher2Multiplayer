@@ -4,6 +4,7 @@ using Il2CppMonomiPark.SlimeRancher.VFX;
 using SR2MP.Components.Drone;
 using SR2MP.Packets.Actor;
 using SR2MP.Packets.Ammo;
+using SR2MP.Packets.Drone;
 using SR2MP.Packets.Loading;
 using SR2MP.Shared.Utils;
 
@@ -260,6 +261,22 @@ internal sealed partial class NetworkActorManager
             ? networkDrone.CurrentOwnerId
             : NetworkDroneManager.CachedOwners.GetValueOrDefault(model.actorId.Value, string.Empty);
 
+        ExplorerProgramStatePacket? programState = null;
+        var pendingExtraction = new List<int>();
+
+        try
+        {
+            var program = model._program;
+            if (program != null)
+                programState = NetworkDroneManager.CreateProgramState(model.actorId.Value, program);
+
+            pendingExtraction = NetworkDroneManager.GetExtractionQueue(model);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Failed to read drone program or extraction queue of station {model.actorId.Value}: {ex.Message}");
+        }
+
         return new InitialActorsPacket.DroneStation
         {
             ActorId = model.actorId.Value,
@@ -281,7 +298,12 @@ internal sealed partial class NetworkActorManager
             },
             Ammo = droneAmmo ?? new NetworkAmmo(),
             DroneOwnerId = droneOwnerId,
-            ChargeupTime = model.waitForChargeupTime
+            ChargeupTime = model.waitForChargeupTime,
+            NextResourceTime = programState?.NextResourceTime ?? 0,
+            NextResourceType = programState?.NextResourceType ?? -1,
+            ProgramState = programState?.State ?? InitialActorsPacket.DroneStation.NoProgram,
+            NextGatherDuration = programState?.NextGatherDuration ?? 0,
+            PendingExtraction = pendingExtraction
         };
     }
 }

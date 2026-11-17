@@ -53,7 +53,15 @@ internal static partial class NetworkDroneManager
         if (ammoModel?.Slots == null)
             return;
 
+        ApplyAmmoToModel(ammoModel, ammo);
+        UpdateAmmoDisplay(drone, ammoModel);
+    }
+
+    internal static void ApplyAmmoToModel(AmmoModel ammoModel, NetworkAmmo ammo)
+    {
         var slots = ammoModel.Slots;
+        if (slots == null)
+            return;
 
         for (var i = 0; i < slots.Count; i++)
         {
@@ -76,8 +84,6 @@ internal static partial class NetworkDroneManager
                 slot._count = 0;
             }
         }
-
-        UpdateAmmoDisplay(drone, ammoModel);
     }
 
     private static void UpdateAmmoDisplay(RanchDrone drone, AmmoModel ammoModel)

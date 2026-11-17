@@ -157,6 +157,7 @@ public sealed class SR2MPClient
             NetworkActorManager.PendingRadiancy.Clear();
             NetworkDroneManager.CachedOwners.Clear();
             NetworkDroneManager.PendingOwners.Clear();
+            NetworkDroneManager.ClearPrograms();
             NetworkGordoSlimeManager.Reset();
 
             serverEndPoint = new IPEndPoint(parsedIp, port);

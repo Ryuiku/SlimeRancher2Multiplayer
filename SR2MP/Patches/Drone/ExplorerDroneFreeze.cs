@@ -35,10 +35,41 @@ internal static class ExplorerDroneProgramFreeze
         if (stationModel == null)
             return true;
 
-        if (NetworkDrone.Drones.TryGetValue(stationModel.actorId.Value, out var drone) && drone &&
-            !drone.IsHibernated && !drone.LocallyOwned)
-            return false;
+        // The program is world simulation the game runs for every station, loaded or not. If every
+        // game ran it, each would collect into the Quantum Cloud on its own and the income would be
+        // counted once per player. One game runs it: the drone's owner, or the host when nobody
+        // near it is connected. The others get its plan through ExplorerProgramStatePacket.
+        try
+        {
+            var stationId = stationModel.actorId.Value;
+            var authority = NetworkDroneManager.IsProgramAuthority(stationId);
+            NetworkDroneManager.LogAuthorityChange(stationId, authority, "explorer program");
+            return authority;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Explorer program authority check failed: {ex.Message}");
+            return Main.Server.IsRunning;
+        }
+    }
 
-        return true;
+    public static void Postfix(ExplorerDroneProgram __instance, bool __runOriginal)
+    {
+        if (!__runOriginal)
+            return;
+
+        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+            return;
+
+        try
+        {
+            var stationModel = __instance._stationModel;
+            if (stationModel != null)
+                NetworkDroneManager.CheckProgramChanged(stationModel.actorId.Value, __instance);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Explorer program change check failed: {ex.Message}");
+        }
     }
 }
