@@ -4,7 +4,9 @@ namespace SR2MP.Packets.TreasurePod;
 
 internal sealed class InitialTreasurePodsPacket : IPacket
 {
-    public Dictionary<int, Il2Cpp.TreasurePod.State> TreasurePods;
+    // Keyed by the game's own pod id ("pod" plus digits, as the scene names it). It used to be the
+    // number only, and turning it back into text lost leading zeros, so pods got a second record.
+    public Dictionary<string, Il2Cpp.TreasurePod.State> TreasurePods;
 
     public PacketType Type => PacketType.InitialTreasurePods;
     public PacketReliability Reliability => PacketReliability.Reliable;
@@ -13,13 +15,13 @@ internal sealed class InitialTreasurePodsPacket : IPacket
     public void Serialise(PacketWriter writer) =>
         writer.WriteDictionary(
             TreasurePods,
-            PacketWriterDels.PackedInt,
+            PacketWriterDels.String!,
             PacketWriterDels.PackedEnum<Il2Cpp.TreasurePod.State>.Writer
         );
 
     public void Deserialise(PacketReader reader) =>
         TreasurePods = reader.ReadDictionary(
-            PacketReaderDels.PackedInt,
+            PacketReaderDels.String!,
             PacketReaderDels.PackedEnum<Il2Cpp.TreasurePod.State>.Reader
         )!;
 }

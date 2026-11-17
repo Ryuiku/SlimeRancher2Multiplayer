@@ -775,12 +775,16 @@ internal sealed class ReSyncManager
 
     private static InitialTreasurePodsPacket CreateTreasurePodsPacket()
     {
-        var treasurePods = new Dictionary<int, TreasurePod.State>();
+        Handlers.TreasurePod.TreasurePodHandler.RepairDuplicatePods();
+
+        var treasurePods = new Dictionary<string, TreasurePod.State>();
 
         foreach (var treasurePod in GameState.pods)
         {
-            if (int.TryParse(treasurePod.key.Replace("pod", string.Empty), out var podId))
-                treasurePods.Add(podId, treasurePod.value.state);
+            if (string.IsNullOrEmpty(treasurePod.key) || treasurePod.value?.state == null)
+                continue;
+
+            treasurePods[treasurePod.key] = treasurePod.value.state.Value;
         }
 
         return new InitialTreasurePodsPacket() { TreasurePods = treasurePods };

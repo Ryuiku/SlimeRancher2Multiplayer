@@ -10,7 +10,8 @@ internal sealed class TreasurePodHandler : BasePacketHandler<TreasurePodPacket>
 {
     protected override bool Handle(TreasurePodPacket packet, IPEndPoint? _)
     {
-        ApplyState("pod" + packet.ID, Il2Cpp.TreasurePod.State.OPEN, false);
+        if (!string.IsNullOrEmpty(packet.ID))
+            ApplyState(packet.ID, Il2Cpp.TreasurePod.State.OPEN, false);
         UnlockAppearance(packet);
         return true;
     }
@@ -44,6 +45,79 @@ internal sealed class TreasurePodHandler : BasePacketHandler<TreasurePodPacket>
         finally
         {
             HandlingPacket = false;
+        }
+    }
+
+    /// <summary>
+    /// Older builds sent pods by number and rebuilt the key as "pod" + number, which drops leading
+    /// zeros ("pod0863429762" became "pod863429762"). Saves that joined with those builds hold a
+    /// second record for such pods, and hosting one made every world send fail on the duplicate.
+    /// This folds each extra record into the game's own one (opened wins) and removes it.
+    /// </summary>
+    internal static void RepairDuplicatePods()
+    {
+        try
+        {
+            var pods = GameState.pods;
+            var byNumber = new Dictionary<long, List<string>>();
+
+            foreach (var entry in pods)
+            {
+                var key = entry.key;
+                if (key == null || !key.StartsWith("pod", StringComparison.Ordinal))
+                    continue;
+
+                if (!long.TryParse(key.Substring(3), System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out var number))
+                    continue;
+
+                if (!byNumber.TryGetValue(number, out var keys))
+                    byNumber[number] = keys = new List<string>();
+                keys.Add(key);
+            }
+
+            var removed = 0;
+            foreach (var (number, keys) in byNumber)
+            {
+                if (keys.Count < 2)
+                    continue;
+
+                // The key the old builds made is exactly "pod" + number. Any other spelling of the
+                // same number came from the game, so that one stays.
+                var madeByOldBuild = "pod" + number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var keep = keys.FirstOrDefault(k => k != madeByOldBuild && pods[k]?.gameObj)
+                           ?? keys.FirstOrDefault(k => k != madeByOldBuild)
+                           ?? keys[0];
+
+                var opened = keys.Any(k =>
+                {
+                    var model = pods[k];
+                    return model?.state != null && model.state.Value == Il2Cpp.TreasurePod.State.OPEN;
+                });
+
+                if (opened)
+                    ApplyState(keep, Il2Cpp.TreasurePod.State.OPEN, true);
+
+                foreach (var key in keys)
+                {
+                    if (key == keep)
+                        continue;
+
+                    var model = pods[key];
+                    if (model?.gameObj)
+                        continue;
+
+                    pods.Remove(key);
+                    removed++;
+                }
+            }
+
+            if (removed > 0)
+                SrLogger.LogMessage($"Removed {removed} duplicate treasure pod record(s) left by an older build.");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not check treasure pods for duplicates: {ex.Message}");
         }
     }
 

@@ -10,12 +10,12 @@ internal static class OnTreasurePodOpen
 {
     public static void Postfix(Il2Cpp.TreasurePod __instance)
     {
-        if (HandlingPacket)
+        if (HandlingPacket || string.IsNullOrEmpty(__instance._id))
             return;
 
         var packet = new TreasurePodPacket()
         {
-            ID = int.Parse(__instance._id.Replace("pod", string.Empty))
+            ID = __instance._id
         };
 
         // The other players only mark the pod as opened, they do not run its rewards. A slime

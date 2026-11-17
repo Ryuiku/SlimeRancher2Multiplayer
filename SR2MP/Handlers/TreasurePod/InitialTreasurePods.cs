@@ -10,8 +10,13 @@ internal sealed class InitialTreasurePodsHandler : BasePacketHandler<InitialTrea
 {
     protected override bool Handle(InitialTreasurePodsPacket packet, IPEndPoint? _)
     {
-        foreach (var (podId, podState) in packet.TreasurePods)
-            TreasurePodHandler.ApplyState("pod" + podId, podState, true);
+        TreasurePodHandler.RepairDuplicatePods();
+
+        foreach (var (podKey, podState) in packet.TreasurePods)
+        {
+            if (!string.IsNullOrEmpty(podKey))
+                TreasurePodHandler.ApplyState(podKey, podState, true);
+        }
 
         return true;
     }

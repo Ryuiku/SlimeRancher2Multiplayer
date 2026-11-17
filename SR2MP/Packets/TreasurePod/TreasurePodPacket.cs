@@ -4,7 +4,8 @@ namespace SR2MP.Packets.TreasurePod;
 
 internal sealed class TreasurePodPacket : IPacket
 {
-    public int ID;
+    // The game's own pod id, such as "pod0863429762".
+    public string ID = string.Empty;
 
     // Slime appearance the pod unlocks, -1 when it has none.
     public int AppearanceSlime = -1;
@@ -16,14 +17,14 @@ internal sealed class TreasurePodPacket : IPacket
 
     public void Serialise(PacketWriter writer)
     {
-        writer.WritePackedInt(ID);
+        writer.WriteString(ID);
         writer.WritePackedInt(AppearanceSlime);
         writer.WritePackedEnum(AppearanceSet);
     }
 
     public void Deserialise(PacketReader reader)
     {
-        ID = reader.ReadPackedInt();
+        ID = reader.ReadString() ?? string.Empty;
         AppearanceSlime = reader.ReadPackedInt();
         AppearanceSet = reader.ReadPackedEnum<SlimeAppearance.AppearanceSaveSet>();
     }
