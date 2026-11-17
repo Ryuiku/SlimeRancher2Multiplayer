@@ -25,23 +25,62 @@ internal static class RanchCellPatches
         => NetworkRanchCellManager.OnHibernationChanging(__instance, hibernating);
 
     // The argument names of these are not known; the first two are taken as the time window, which
-    // is only used for the log.
+    // is only used for the log. A held part is repeated later with the same arguments.
 
     [HarmonyPrefix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardCorrals))]
-    public static bool FastForwardCorralsPrefix(RanchCellFastForwarder __instance, double __0, double __1)
-        => !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "corral", __0, __1);
+    public static bool FastForwardCorralsPrefix(RanchCellFastForwarder __instance, double __0, double __1, double __2, out bool __state)
+    {
+        var cell = __instance;
+        __state = !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "corral", __0, __1,
+            () => cell.FastForwardCorrals(__0, __1, __2));
+
+        // Lets the feeding through for slimes another player owns (see OnSlimeChomp).
+        if (__state)
+            NetworkRanchCellManager.BeginCatchUp();
+        return __state;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardCorrals))]
+    public static void FastForwardCorralsPostfix(bool __state)
+    {
+        if (__state)
+            NetworkRanchCellManager.EndCatchUp();
+    }
 
     [HarmonyPrefix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardPonds))]
-    public static bool FastForwardPondsPrefix(RanchCellFastForwarder __instance, double __0, double __1)
-        => !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "pond", __0, __1);
+    public static bool FastForwardPondsPrefix(RanchCellFastForwarder __instance, double __0, double __1, double __2, out bool __state)
+    {
+        var cell = __instance;
+        __state = !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "pond", __0, __1,
+            () => cell.FastForwardPonds(__0, __1, __2));
+
+        if (__state)
+            NetworkRanchCellManager.BeginCatchUp();
+        return __state;
+    }
+
+    [HarmonyPostfix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardPonds))]
+    public static void FastForwardPondsPostfix(bool __state)
+    {
+        if (__state)
+            NetworkRanchCellManager.EndCatchUp();
+    }
 
     [HarmonyPrefix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardIncinerators))]
-    public static bool FastForwardIncineratorsPrefix(RanchCellFastForwarder __instance, double __0, double __1)
-        => !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "incinerator", __0, __1);
+    public static bool FastForwardIncineratorsPrefix(RanchCellFastForwarder __instance, double __0, double __1, double __2)
+    {
+        var cell = __instance;
+        return !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "incinerator", __0, __1,
+            () => cell.FastForwardIncinerators(__0, __1, __2));
+    }
 
     [HarmonyPrefix, HarmonyPatch(nameof(RanchCellFastForwarder.FastForwardGardens))]
-    public static bool FastForwardGardensPrefix(RanchCellFastForwarder __instance, double __0, double __1)
-        => !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "garden", __0, __1);
+    public static bool FastForwardGardensPrefix(RanchCellFastForwarder __instance, double __0, double __1, float __2)
+    {
+        var cell = __instance;
+        return !NetworkRanchCellManager.ShouldSkipCatchUp(__instance, "garden", __0, __1,
+            () => cell.FastForwardGardens(__0, __1, __2));
+    }
 }
 
 /// <summary>

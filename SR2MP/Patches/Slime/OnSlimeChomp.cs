@@ -113,12 +113,18 @@ internal static class OnSlimeChomp
     // time a ranch area was asleep. A slime that was asleep with its area is ours again only a
     // frame after it wakes, so the strict check would silently skip that feeding (no plorts for
     // the time away). It is allowed unless another player is simulating the slime right now.
+    // Inside a corral or pond catch-up it is always allowed: only the area's simulator runs that
+    // catch-up (the others skip it), so it feeds every slime there, including ones another player
+    // owns. Refusing those left them unfed for the whole night when another player owned them.
     private static bool MayEatImmediate(SlimeEat slimeEat, GameObject target)
     {
         if (target)
             return MayEat(slimeEat) && TryOwnTarget(slimeEat, target);
 
         if (HandlingPacket || (!Main.Server.IsRunning && !Main.Client.IsConnected))
+            return true;
+
+        if (SR2MP.Shared.Managers.NetworkRanchCellManager.RunningCatchUp)
             return true;
 
         try

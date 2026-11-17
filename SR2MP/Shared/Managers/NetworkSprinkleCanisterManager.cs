@@ -243,7 +243,7 @@ internal static class NetworkSprinkleCanisterManager
         HandlingPacket = true;
         try
         {
-            var model = FindModel(state.Id);
+            var model = FindModel(state.Id) ?? TryCreateModel(state);
             if (model == null)
             {
                 Pending[state.Id] = state;
@@ -271,6 +271,50 @@ internal static class NetworkSprinkleCanisterManager
         finally
         {
             HandlingPacket = false;
+        }
+    }
+
+    /// <summary>
+    /// A canister this world has no record of (this player, often the host, has never loaded the
+    /// Sanctuary) is recorded from the producer's state, the way the game would save it. Kept only
+    /// in memory it was lost when the host restarted, and the next join then deleted the producer's
+    /// own canister because the host had none. Null when it cannot be made; the state then waits.
+    /// </summary>
+    private static SprinkleCanisterModel? TryCreateModel(SprinkleCanisterState state)
+    {
+        // Without its slots the canister could not be saved or built later; it waits instead.
+        if (state.Slots.Count == 0)
+            return null;
+
+        try
+        {
+            var gameModel = GameState;
+            if (gameModel?._sprinkleCanisterModels == null)
+                return null;
+
+            var model = gameModel.InitializeSprinkleCanisterModel(state.Id, state.LastUpdateTime);
+            if (model == null)
+                return null;
+
+            // Like a canister loaded from a save: each slot holds only its contents; the canister
+            // sets the rest up from its own definitions when it is built.
+            if (model.Ammo == null || model.Ammo.Slots == null || model.Ammo.Slots.Length < state.Slots.Count)
+            {
+                var slots = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<AmmoSlot>(state.Slots.Count);
+                for (var i = 0; i < slots.Length; i++)
+                    slots[i] = new AmmoSlot();
+
+                model.Ammo ??= new AmmoModel(null);
+                model.Ammo.Slots = slots;
+            }
+
+            SrLogger.LogMessage($"Sprinkle canister {state.Id}: recorded in this world from the producer's state");
+            return model;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not record sprinkle canister {state.Id}: {ex.Message}");
+            return null;
         }
     }
 

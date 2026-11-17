@@ -140,6 +140,15 @@ internal sealed class NetworkGarden : MonoBehaviour
 
         registered = true;
 
+        // The host's saved growth for a spawner this save had no data for when this player joined.
+        // Without it the spawner started on this save's defaults, and this game sent those to the
+        // host as the owner's growth once it took the spawner over.
+        if (NetworkGardenManager.TakeHostSpawnerState(garden._model.pos, out var hostSaved))
+        {
+            ApplyHostSaved(hostSaved.NextSpawnTime, hostSaved.StoredWater, hostSaved.NextSpawnRipens);
+            SrLogger.LogGarden($"Garden '{Id}' got the host's saved growth");
+        }
+
         // Growth another player simulated while this garden had no saved data here yet. Written
         // to the data directly: the host's gardens start as its own, so ApplyUpdate would skip it.
         if (NetworkGardenManager.TakePendingState(Id!, out var pending))
@@ -301,6 +310,22 @@ internal sealed class NetworkGarden : MonoBehaviour
         garden._model.nextSpawnTime = nextSpawnTime;
         garden._model.storedWater = storedWater;
         garden._model.nextSpawnRipens = nextSpawnRipens;
+    }
+
+    internal Il2CppMonomiPark.SlimeRancher.DataModel.SpawnResourceModel? Model
+        => garden != null ? garden._model : null;
+
+    // The host's saved growth, written whoever owns the garden here: the host's save is the
+    // source of truth, and a live owner elsewhere sends its newer growth right after.
+    internal void ApplyHostSaved(double nextSpawnTime, float storedWater, bool nextSpawnRipens)
+    {
+        if (garden?._model == null)
+            return;
+
+        garden._model.nextSpawnTime = nextSpawnTime;
+        garden._model.storedWater = storedWater;
+        garden._model.nextSpawnRipens = nextSpawnRipens;
+        CacheState(nextSpawnTime, storedWater, nextSpawnRipens);
     }
 
     internal GardenUpdatePacket.Entry? CaptureState()

@@ -15,7 +15,8 @@ namespace SR2MP.Shared.Managers;
 /// forward to it, so they only catch up the time nobody simulated. The host also picks one player
 /// per area (itself when it is there) whose game runs the catch-up after a sleep or when the area
 /// wakes, and the auto-feeders of that area; the other games skip those parts.
-/// Anything unknown or out of date falls back to what the game does on its own.
+/// A client that wakes an area before it knows who simulates it holds that catch-up and asks the
+/// host, which answers at once; the host never waits, since it is always picked when it is there.
 /// </summary>
 internal static class NetworkRanchCellManager
 {
@@ -42,6 +43,37 @@ internal static class NetworkRanchCellManager
     private static float nextHeartbeat;
     private static float nextRegionRebuild;
     private static readonly HashSet<IntPtr> LoggedUnknownRegions = new();
+
+    // A client's held catch-up waits this long for the host to name the area's simulator; after
+    // that it runs here, since an answer that never comes would otherwise lose it for good.
+    private const float PendingTimeout = 15f;
+
+    private sealed class PendingCatchUp
+    {
+        public RanchCellFastForwarder Cell = null!;
+        public readonly List<(string Part, Action Run)> Parts = new();
+        public float Since;
+    }
+
+    // Client only: catch-up parts held while the host has not yet said who simulates the area.
+    private static readonly Dictionary<string, PendingCatchUp> Pending = new();
+
+    private static bool runningHeld;
+    private static int catchUpDepth;
+
+    /// <summary>
+    /// True while this game runs a corral or pond catch-up. Its feeding has no food object and is
+    /// done by the area's simulator for every slime there, whoever owns the slime right now.
+    /// </summary>
+    internal static bool RunningCatchUp => catchUpDepth > 0;
+
+    internal static void BeginCatchUp() => catchUpDepth++;
+
+    internal static void EndCatchUp()
+    {
+        if (catchUpDepth > 0)
+            catchUpDepth--;
+    }
 
     static NetworkRanchCellManager()
     {
@@ -169,11 +201,34 @@ internal static class NetworkRanchCellManager
     /// <summary>Called every frame on the main thread.</summary>
     internal static void Tick()
     {
-        if (!InSession)
-            return;
+        // A catch-up runs within one frame; a count left over means a call ended without its
+        // postfix (it threw), and must not let later feeding through.
+        catchUpDepth = 0;
 
         var now = Time.realtimeSinceStartup;
-        if (now < nextHeartbeat)
+
+        if (Pending.Count > 0)
+        {
+            foreach (var (id, pending) in Pending.ToArray())
+            {
+                // Held catch-up waiting for a host that is gone: nobody else will run it now.
+                // Run from here, on the main thread, as the disconnect may come from another.
+                if (!InSession)
+                {
+                    Pending.Remove(id);
+                    RunHeld(id, pending, "the session ended");
+                    continue;
+                }
+
+                if (now - pending.Since < PendingTimeout)
+                    continue;
+
+                Pending.Remove(id);
+                RunHeld(id, pending, "the host did not name a simulator in time");
+            }
+        }
+
+        if (!InSession || now < nextHeartbeat)
             return;
         nextHeartbeat = now + HeartbeatInterval;
 
@@ -344,11 +399,19 @@ internal static class NetworkRanchCellManager
                 {
                     // Only the host decides who simulates; a player's report means "awake here".
                     if (!string.IsNullOrEmpty(senderId))
+                    {
                         MarkAwake(entry.CellId, senderId!, now);
+
+                        // A player just woke an area nobody simulates: it holds its catch-up
+                        // until it hears who does, so the answer goes out on the next frame.
+                        if (!Simulators.TryGetValue(entry.CellId, out var current) || now - current.Since > FreshFor)
+                            nextHeartbeat = 0f;
+                    }
                 }
                 else if (!string.IsNullOrEmpty(entry.SimulatorId))
                 {
                     Simulators[entry.CellId] = (entry.SimulatorId, now);
+                    ResolveHeld(entry.CellId, entry.SimulatorId);
                 }
 
                 if (entry.SimulatedUntil <= 0d)
@@ -443,24 +506,44 @@ internal static class NetworkRanchCellManager
     }
 
     /// <summary>
-    /// True when another player's game runs this area's catch-up right now, so this game skips
-    /// that part (feeding, collecting, growing for the time away or asleep).
+    /// True when this game must not run that part of the area's catch-up (feeding, collecting,
+    /// growing for the time away or asleep) now: another player's game runs it, or this client
+    /// does not know yet who does and holds it (<paramref name="run"/> repeats the call later).
+    /// Two games waking the same area together both found no simulator and both ran it, so
+    /// collectors got the plorts twice and feeders were drained twice.
     /// </summary>
-    internal static bool ShouldSkipCatchUp(RanchCellFastForwarder cell, string part, double from, double to)
+    internal static bool ShouldSkipCatchUp(RanchCellFastForwarder cell, string part, double from, double to, Action run)
     {
         try
         {
-            if (!InSession || HandlingPacket)
+            if (!InSession || HandlingPacket || runningHeld)
                 return false;
 
             var id = CellId(cell);
-            if (id == null || !IsOtherSimulator(id))
+            if (id == null)
                 return false;
 
-            var key = $"{id}:{part}:{from:F0}";
-            if (LoggedSkips.Add(key))
-                SrLogger.LogDebug($"Skipped the {part} catch-up of ranch area {id} ({from:F0} to {to:F0}): {Simulators[id].PlayerId} simulates it");
+            if (IsOtherSimulator(id))
+            {
+                var key = $"{id}:{part}:{from:F0}";
+                if (LoggedSkips.Add(key))
+                    SrLogger.LogDebug($"Skipped the {part} catch-up of ranch area {id} ({from:F0} to {to:F0}): {Simulators[id].PlayerId} simulates it");
 
+                return true;
+            }
+
+            if (IsLocalSimulator(id))
+                return false;
+
+            // The host is the one picked whenever it has the area awake, so it takes the area
+            // now and tells the others right away instead of waiting for its next heartbeat.
+            if (Main.Server.IsRunning)
+            {
+                ClaimForHost(id);
+                return false;
+            }
+
+            Hold(cell, id, part, from, to, run);
             return true;
         }
         catch (Exception ex)
@@ -468,6 +551,99 @@ internal static class NetworkRanchCellManager
             SrLogger.LogDebug($"Ranch catch-up check failed: {ex.Message}");
             return false;
         }
+    }
+
+    private static void ClaimForHost(string id)
+    {
+        var now = Time.realtimeSinceStartup;
+        MarkAwake(id, LocalID, now);
+
+        if (!Simulators.TryGetValue(id, out var previous) || previous.PlayerId != LocalID)
+            SrLogger.LogDebug($"Ranch area {id} woke on the host with no simulator; the host simulates it");
+
+        Simulators[id] = (LocalID, now);
+        nextHeartbeat = 0f;
+    }
+
+    private static void Hold(RanchCellFastForwarder cell, string id, string part, double from, double to, Action run)
+    {
+        var now = Time.realtimeSinceStartup;
+        var isNew = false;
+
+        if (!Pending.TryGetValue(id, out var pending) || !pending.Cell || pending.Cell.Pointer != cell.Pointer)
+        {
+            Pending[id] = pending = new PendingCatchUp { Cell = cell, Since = now };
+            isNew = true;
+        }
+
+        pending.Parts.Add((part, run));
+        SrLogger.LogDebug($"Held the {part} catch-up of ranch area {id} ({from:F0} to {to:F0}) until the host says who simulates it");
+
+        // Asks the host now; the regular report would only come with the next heartbeat.
+        if (isNew && NetworkActorManager.CanSendActorChanges)
+        {
+            Main.SendToAllOrServer(new RanchCellSyncPacket
+            {
+                Entries = new List<RanchCellSyncPacket.Entry> { NewEntry(id, string.Empty) }
+            });
+        }
+    }
+
+    // Client: the host named the area's simulator. Held catch-up runs here only if it is us.
+    private static void ResolveHeld(string id, string simulatorId)
+    {
+        if (!Pending.TryGetValue(id, out var pending))
+            return;
+
+        Pending.Remove(id);
+
+        if (simulatorId == LocalID)
+        {
+            RunHeld(id, pending, "this game simulates it");
+            return;
+        }
+
+        SrLogger.LogDebug($"Dropped the held catch-up of ranch area {id}: {simulatorId} simulates it");
+    }
+
+    private static void RunHeld(string id, PendingCatchUp pending, string reason)
+    {
+        if (!pending.Cell)
+            return;
+
+        SrLogger.LogDebug($"Running the held catch-up of ranch area {id}: {reason}");
+
+        runningHeld = true;
+        try
+        {
+            foreach (var (part, run) in pending.Parts)
+            {
+                try
+                {
+                    run();
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogDebug($"Held {part} catch-up of ranch area {id} failed: {ex.Message}");
+                }
+            }
+        }
+        finally
+        {
+            runningHeld = false;
+        }
+    }
+
+    private static bool IsLocalSimulator(string id)
+    {
+        if (!Simulators.TryGetValue(id, out var simulator) || simulator.PlayerId != LocalID)
+            return false;
+
+        var timeDirector = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+        if (timeDirector && timeDirector!.IsFastForwarding())
+            return true;
+
+        return Time.realtimeSinceStartup - simulator.Since <= FreshFor;
     }
 
     /// <summary>

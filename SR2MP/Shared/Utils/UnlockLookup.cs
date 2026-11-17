@@ -301,6 +301,43 @@ internal static class UnlockLookup
         }
     }
 
+    /// <summary>
+    /// Host: a client's count for a kiosk item, made from a count the host no longer has (another
+    /// player deposited the same item at about the same time). Both games sent "old + 1", so one
+    /// deposit was lost in every save. The client's change is added to the host's count instead,
+    /// and the result goes to everyone, the sender included. False when there was no clash.
+    /// </summary>
+    internal static bool MergeConcurrentRewardProgress(SR2MP.Packets.World.EndGameRewardProgressPacket packet)
+    {
+        if (packet.Op != SR2MP.Packets.World.EndGameRewardProgressPacket.ProgressOp.Set
+            || packet.Previous < 0 || string.IsNullOrEmpty(packet.RewardId))
+            return false;
+
+        var type = FindIdent(packet.IdentId);
+        if (type == null)
+            return false;
+
+        var model = SceneContext.Instance.PlayerState._model.EndGameRewards;
+        var current = model.GetItemProgressOrDefault(packet.RewardId, type);
+        if (current == packet.Previous)
+            return false;
+
+        var merged = Math.Max(0, current + packet.Count - packet.Previous);
+        SrLogger.LogMessage($"Rewards kiosk {packet.RewardId}: a player's count {packet.Previous} -> {packet.Count} met {current} here; now {merged}");
+
+        ApplyRewardProgress(packet.Op, packet.RewardId, packet.IdentId, merged);
+
+        Main.SendToAllOrServer(new SR2MP.Packets.World.EndGameRewardProgressPacket
+        {
+            RewardId = packet.RewardId,
+            IdentId = packet.IdentId,
+            Count = merged,
+            Op = SR2MP.Packets.World.EndGameRewardProgressPacket.ProgressOp.Set,
+            Previous = -1
+        });
+        return true;
+    }
+
     /// <summary>The host's kiosk progress replaces this save's.</summary>
     private static void ApplyRewardSnapshot(List<(string RewardId, int IdentId, int Count)> entries)
     {

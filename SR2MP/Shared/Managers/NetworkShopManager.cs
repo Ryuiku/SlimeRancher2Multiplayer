@@ -240,7 +240,20 @@ internal static class NetworkShopManager
 
         try
         {
+            // The host's save is the one that keeps purchases. A category the host has never
+            // bought from has no stock record yet; dropping a client's purchase there meant the
+            // host's save never kept it. The sender's stock becomes the host's (and everyone's).
             var set = GetOrCreateSet(key, seed, false);
+            if (set == null && Main.Server.IsRunning)
+            {
+                set = GetOrCreateSet(key, seed, true);
+                if (set != null)
+                {
+                    SrLogger.LogMessage($"Shop category {key}: no stock here yet, the buyer's (seed {seed}) is kept");
+                    dirty = true;
+                }
+            }
+
             if (set == null || set._seed != seed)
             {
                 SrLogger.LogMessage($"Shop purchase of {itemId} in {key} is for another stock (seed {seed}, here {set?._seed.ToString() ?? "none"}), ignored");

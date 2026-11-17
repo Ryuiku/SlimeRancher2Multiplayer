@@ -143,15 +143,67 @@ internal static class NetworkGardenManager
     // Growth for gardens with no saved data here yet, by garden id. Applied when the garden loads.
     private static readonly Dictionary<string, GardenUpdatePacket.Entry> PendingStates = new();
 
+    // A joining player: the host's saved growth for spawners this save has no data for yet (it
+    // only makes it when their zone first loads), by position rounded to whole metres. Written
+    // when the spawner loads here, so it does not start on this save's own defaults and then
+    // send them to the host as the owner's growth.
+    private static readonly Dictionary<(int, int, int), List<InitialResourceSpawnersPacket.Entry>> HostSpawnersNotHere = new();
+
     static NetworkGardenManager()
     {
-        Main.Server.OnServerStarted +=      PendingStates.Clear;
-        Main.Client.OnConnected     += _ => PendingStates.Clear();
-        Main.Client.OnDisconnected  +=      PendingStates.Clear;
+        Main.Server.OnServerStarted +=      ClearPending;
+        Main.Client.OnConnected     += _ => ClearPending();
+        Main.Client.OnDisconnected  +=      ClearPending;
+    }
+
+    private static void ClearPending()
+    {
+        PendingStates.Clear();
+        HostSpawnersNotHere.Clear();
     }
 
     internal static bool TakePendingState(string gardenId, out GardenUpdatePacket.Entry entry)
         => PendingStates.Remove(gardenId, out entry);
+
+    internal static bool TakeHostSpawnerState(Vector3 position, out InitialResourceSpawnersPacket.Entry entry)
+    {
+        entry = default;
+        if (HostSpawnersNotHere.Count == 0)
+            return false;
+
+        var (x, y, z) = GridKey(position);
+        List<InitialResourceSpawnersPacket.Entry>? bestBucket = null;
+        var bestIndex = -1;
+        var bestDistance = SamePositionSqr;
+
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dy = -1; dy <= 1; dy++)
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            if (!HostSpawnersNotHere.TryGetValue((x + dx, y + dy, z + dz), out var bucket))
+                continue;
+
+            for (var i = 0; i < bucket.Count; i++)
+            {
+                var distance = (bucket[i].Position - position).sqrMagnitude;
+                if (distance >= bestDistance)
+                    continue;
+
+                bestDistance = distance;
+                bestBucket = bucket;
+                bestIndex = i;
+            }
+        }
+
+        if (bestBucket == null)
+            return false;
+
+        entry = bestBucket[bestIndex];
+        bestBucket.RemoveAt(bestIndex);
+        if (bestBucket.Count == 0)
+            HostSpawnersNotHere.Remove(GridKey(entry.Position));
+        return true;
+    }
 
     // The garden is not loaded here: its saved data (which the game finds by position when the
     // area loads) gets the owner's growth, so this save, the host's included, keeps it.
@@ -264,12 +316,19 @@ internal static class NetworkGardenManager
     }
 
     /// <summary>
-    /// A joining player: the host's growth is written to the saved data of the spawners that are
-    /// not loaded here. Loaded ones get it from their owner through their NetworkGarden.
+    /// A joining player: the host's growth is written to the saved data of every spawner, loaded
+    /// here or not, and kept for the spawners this save has no data for yet. The host's save is
+    /// the source of truth; a loaded spawner whose owner has it live gets that owner's newer
+    /// growth right after anyway. Leaving loaded ones to "their owner" lost the host's growth
+    /// when nobody else had them loaded: this game took them over with its own save's growth
+    /// and sent that to the host.
     /// </summary>
     internal static void ApplyInitialPacket(InitialResourceSpawnersPacket packet)
     {
         int applied = 0, live = 0, missing = 0;
+        HostSpawnersNotHere.Clear();
+
+        Dictionary<IntPtr, NetworkGarden>? gardensByModel = null;
 
         foreach (var entry in packet.Entries)
         {
@@ -278,20 +337,37 @@ internal static class NetworkGardenManager
                 var model = FindSpawnerModel(entry.Position);
                 if (model == null)
                 {
+                    var key = GridKey(entry.Position);
+                    if (!HostSpawnersNotHere.TryGetValue(key, out var bucket))
+                        HostSpawnersNotHere[key] = bucket = new List<InitialResourceSpawnersPacket.Entry>(1);
+                    bucket.Add(entry);
                     missing++;
                     continue;
                 }
 
-                if (model.part != null)
+                if (model.part == null)
                 {
-                    live++;
+                    model.nextSpawnTime = entry.NextSpawnTime;
+                    model.storedWater = entry.StoredWater;
+                    model.nextSpawnRipens = entry.NextSpawnRipens;
+                    applied++;
+                    continue;
+                }
+
+                // Loaded here: its garden keeps a copy that it restores on wake, which must match.
+                // One this game already simulates is left alone; the host's copy came from it.
+                live++;
+                gardensByModel ??= GardensByModel();
+                if (gardensByModel.TryGetValue(model.Pointer, out var garden) && garden)
+                {
+                    if (!garden.LocallyOwned)
+                        garden.ApplyHostSaved(entry.NextSpawnTime, entry.StoredWater, entry.NextSpawnRipens);
                     continue;
                 }
 
                 model.nextSpawnTime = entry.NextSpawnTime;
                 model.storedWater = entry.StoredWater;
                 model.nextSpawnRipens = entry.NextSpawnRipens;
-                applied++;
             }
             catch (Exception ex)
             {
@@ -299,7 +375,20 @@ internal static class NetworkGardenManager
             }
         }
 
-        SrLogger.LogDebug($"Resource spawners from the host: {applied} written, {live} loaded here (left to their owner), {missing} not in this save");
+        SrLogger.LogDebug($"Resource spawners from the host: {applied} written, {live} loaded here (written too), {missing} not in this save yet (kept until they load)");
+    }
+
+    private static Dictionary<IntPtr, NetworkGarden> GardensByModel()
+    {
+        var result = new Dictionary<IntPtr, NetworkGarden>();
+        foreach (var garden in Gardens.Values)
+        {
+            var model = garden ? garden.Model : null;
+            if (model != null)
+                result[model.Pointer] = garden;
+        }
+
+        return result;
     }
 
     #endregion

@@ -1,5 +1,6 @@
 using Il2CppMonomiPark.SlimeRancher.DataModel;
 using Il2CppMonomiPark.SlimeRancher.UI.Themes;
+using System.Net;
 using Il2CppMonomiPark.SlimeRancher.World;
 using SR2MP.Packets.Sanctuary;
 using SR2MP.Shared.Utils;
@@ -26,6 +27,11 @@ internal static class NetworkSanctuaryManager
     // through the room and through its model; this keeps one change from being sent twice.
     private static readonly Dictionary<string, string> LastKnownThemes = new();
 
+    // Host only: when each pre-placed spot was last given a gadget, by room and spot (real time).
+    // A gadget picked moments ago may simply not have reached the host's world yet.
+    private static readonly Dictionary<(string Room, string Spot), float> PreplacedSetAt = new();
+    private const float PreplacedGrace = 30f;
+
     static NetworkSanctuaryManager()
     {
         Main.Server.OnServerStarted +=      ClearSession;
@@ -38,6 +44,7 @@ internal static class NetworkSanctuaryManager
         PendingThemes.Clear();
         PendingPreplaced.Clear();
         LastKnownThemes.Clear();
+        PreplacedSetAt.Clear();
     }
 
     internal static IReadOnlyDictionary<string, string> PendingThemeEntries => PendingThemes;
@@ -174,6 +181,10 @@ internal static class NetworkSanctuaryManager
         if (string.IsNullOrEmpty(roomId))
             return;
 
+        // The host's own pick always stands; what a client picks is checked against it.
+        if (Main.Server.IsRunning)
+            PreplacedSetAt[(roomId!, gadgetId!)] = UnityEngine.Time.realtimeSinceStartup;
+
         Main.SendToAllOrServer(new SanctuaryRoomPacket
         {
             RoomId = roomId!,
@@ -253,7 +264,86 @@ internal static class NetworkSanctuaryManager
         }
     }
 
-    internal static void ApplyPreplaced(string roomId, List<(string GadgetId, long ActorId)> entries)
+    /// <summary>
+    /// Host: a client's pick for pre-placed spots. Two games entering a room at about the same
+    /// time each filled an empty spot with a gadget of their own, and each then recorded the
+    /// other's, so both gadgets stayed and the saves disagreed which one belongs to the spot.
+    /// The host keeps the gadget it already has for a spot; a pick for it is taken out of the
+    /// packet (so it is not passed on) and the sender is told the gadget that stands there. The
+    /// sender then removes its own gadget. A pick replaces the host's only when the host's gadget
+    /// is gone from its world and was not given to the spot just now.
+    /// </summary>
+    internal static void ArbitratePreplaced(SanctuaryRoomPacket packet, IPEndPoint? sender)
+    {
+        if (string.IsNullOrEmpty(packet.RoomId) || packet.PreplacedGadgets.Count == 0)
+            return;
+
+        SanctuaryRoomModel? model = null;
+        try
+        {
+            GameState?.sanctuaryRooms?.TryGetValue(packet.RoomId, out model);
+        }
+        catch
+        {
+            model = null;
+        }
+
+        var now = UnityEngine.Time.realtimeSinceStartup;
+        List<(string GadgetId, long ActorId)>? standing = null;
+
+        for (var i = packet.PreplacedGadgets.Count - 1; i >= 0; i--)
+        {
+            var (gadgetId, actorId) = packet.PreplacedGadgets[i];
+            if (string.IsNullOrEmpty(gadgetId) || actorId == 0)
+                continue;
+
+            long current = 0;
+            try
+            {
+                if (model != null && model.TryGetPreplacedGadget(new SanctuaryRoomPreplacedGadgetId(gadgetId), out var found))
+                    current = found.Value;
+            }
+            catch
+            {
+                current = 0;
+            }
+
+            if (current == 0 || current == actorId || HostGadgetIsGone(packet.RoomId, gadgetId, current, now))
+            {
+                PreplacedSetAt[(packet.RoomId, gadgetId)] = now;
+                continue;
+            }
+
+            packet.PreplacedGadgets.RemoveAt(i);
+            (standing ??= new()).Add((gadgetId, current));
+            SrLogger.LogMessage($"Sanctuary room {packet.RoomId}: pre-placed gadget {gadgetId} already is actor {current}; a player's actor {actorId} was turned down");
+        }
+
+        if (standing != null && sender != null)
+            Main.Server.SendToClient(new SanctuaryRoomPacket { RoomId = packet.RoomId, PreplacedGadgets = standing }, sender);
+    }
+
+    private static bool HostGadgetIsGone(string roomId, string gadgetId, long actorId, float now)
+    {
+        if (PreplacedSetAt.TryGetValue((roomId, gadgetId), out var setAt) && now - setAt < PreplacedGrace)
+            return false;
+
+        try
+        {
+            return !GameState.TryGetIdentifiableModel(new ActorId(actorId), out _);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Writes pre-placed gadgets from the network. <paramref name="fromHostLive"/>: a client
+    /// applying what the host decided during play; a gadget of this game's own that lost its spot
+    /// is then removed for everyone, so no second copy stays in the room.
+    /// </summary>
+    internal static void ApplyPreplaced(string roomId, List<(string GadgetId, long ActorId)> entries, bool fromHostLive = false)
     {
         if (string.IsNullOrEmpty(roomId) || entries.Count == 0)
             return;
@@ -275,11 +365,19 @@ internal static class NetworkSanctuaryManager
             return;
         }
 
-        WritePreplaced(roomId, model, entries);
+        var lost = WritePreplaced(roomId, model, entries, fromHostLive && !Main.Server.IsRunning);
+        if (lost == null)
+            return;
+
+        foreach (var actorId in lost)
+            RemoveLostGadget(roomId, actorId);
     }
 
-    private static void WritePreplaced(string roomId, SanctuaryRoomModel model, IEnumerable<(string GadgetId, long ActorId)> entries)
+    private static List<long>? WritePreplaced(string roomId, SanctuaryRoomModel model,
+        IEnumerable<(string GadgetId, long ActorId)> entries, bool collectLost = false)
     {
+        List<long>? lost = null;
+
         HandlingPacket = true;
         try
         {
@@ -291,8 +389,14 @@ internal static class NetworkSanctuaryManager
                 try
                 {
                     var key = new SanctuaryRoomPreplacedGadgetId(gadgetId);
-                    if (model.TryGetPreplacedGadget(key, out var current) && current.Value == actorId)
-                        continue;
+                    if (model.TryGetPreplacedGadget(key, out var current))
+                    {
+                        if (current.Value == actorId)
+                            continue;
+
+                        if (collectLost && IsOwnActorId(current.Value))
+                            (lost ??= new()).Add(current.Value);
+                    }
 
                     model.SetPreplacedGadget(key, new ActorId(actorId));
                     SrLogger.LogMessage($"Sanctuary room {roomId}: pre-placed gadget {gadgetId} is actor {actorId}");
@@ -306,6 +410,54 @@ internal static class NetworkSanctuaryManager
         finally
         {
             HandlingPacket = false;
+        }
+
+        return lost;
+    }
+
+    // An id this game handed out in this session (each player has its own range of ids). Ids of
+    // this player's own save before joining are in the host's range and never count.
+    private static bool IsOwnActorId(long actorId)
+    {
+        try
+        {
+            var provider = GameState?._actorIdProvider;
+            if (provider == null)
+                return false;
+
+            var range = provider._nextActorId / ActorIdOffset;
+            return range != 0 && actorId / ActorIdOffset == range;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Our gadget lost its pre-placed spot to the gadget the host kept: removed the usual way, so
+    // the removal reaches everyone who got our gadget.
+    private static void RemoveLostGadget(string roomId, long actorId)
+    {
+        try
+        {
+            if (!GameState.TryGetIdentifiableModel(new ActorId(actorId), out var actor) || actor == null)
+                return;
+
+            GameObject? obj = null;
+            try { obj = actor.GetGameObject(); } catch { /* not built */ }
+
+            if (obj == null || !obj)
+            {
+                SrLogger.LogMessage($"Sanctuary room {roomId}: our gadget {actorId} lost its pre-placed spot but is not built here; left as it is");
+                return;
+            }
+
+            Destroyer.DestroyGadget(obj, "SR2MP.PreplacedGadgetLost");
+            SrLogger.LogMessage($"Sanctuary room {roomId}: removed our gadget {actorId}, which lost its pre-placed spot");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Sanctuary room {roomId}: could not remove our gadget {actorId}: {ex.Message}");
         }
     }
 
