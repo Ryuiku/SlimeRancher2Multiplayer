@@ -77,30 +77,15 @@ internal sealed class TreasurePodHandler : BasePacketHandler<TreasurePodPacket>
         if (packet.AppearanceSlime < 0)
             return;
 
+        // The same unlock as any other shared appearance; this copy in the pod packet is kept so
+        // older routes still work, and unlocking twice does nothing.
         try
         {
-            if (!ActorManager.ActorTypes.TryGetValue(packet.AppearanceSlime, out var type) || !type)
-                return;
-
-            var slime = type.TryCast<SlimeDefinition>();
-            var director = SceneContext.Instance.SlimeAppearanceDirector;
-            if (!slime || !director)
-                return;
-
-            var appearance = director.GetSpecificSlimeAppearance(type, packet.AppearanceSet);
-            if (!appearance || director.IsAppearanceUnlocked(slime, appearance))
-                return;
-
-            HandlingPacket = true;
-            director.UnlockAppearance(slime, appearance);
+            SR2MP.Shared.Utils.UnlockLookup.UnlockAppearance(packet.AppearanceSlime, packet.AppearanceSet);
         }
         catch (Exception ex)
         {
             SrLogger.LogWarning($"Could not unlock the appearance from pod {packet.ID}: {ex.Message}");
-        }
-        finally
-        {
-            HandlingPacket = false;
         }
     }
 

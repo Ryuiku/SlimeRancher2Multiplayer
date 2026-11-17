@@ -111,6 +111,9 @@ internal enum PacketType : byte
     Blueprints = 117,             // Both Ways                                    Low (manual)                          Gadget blueprints unlocked (on unlock, and all of them on join)
     InitialActorOwners = 118,     // Server -> Client                             Low (depends on join)                 Who simulates which actor, sent just before the initial actors
     BreakableBreak = 123,         // Both Ways                                    Low (manual)                          A non-owner hit a breakable crate; its owner breaks it
+    UnlockShared = 124,           // Both Ways                                    Low (manual)                          A vac palette, sanctuary theme, slime appearance or secret style unlocked
+    InitialUnlocks = 125,         // Server -> Client                             Low (depends on join)                 Palettes, themes, appearances, secret styles and rewards kiosk progress on join
+    EndGameRewardProgress = 126,  // Both Ways                                    Low (manual)                          Rewards kiosk progress changed
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

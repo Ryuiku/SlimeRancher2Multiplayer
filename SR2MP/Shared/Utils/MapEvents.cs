@@ -97,6 +97,11 @@ internal static class MapEvents
 
     private static bool TryFindZone(ZoneEventProducer producer, string dataKey, out ZoneDefinition zone)
     {
+        // A zone missing from the cache may only have been loaded since it was built; zone
+        // unlocks are rare, so it is rebuilt once for it.
+        if (zonesByKey != null && !zonesByKey.ContainsKey(dataKey))
+            zonesByKey = null;
+
         if (zonesByKey == null || zonesByKey.Count == 0)
         {
             var map = new Dictionary<string, ZoneDefinition>();

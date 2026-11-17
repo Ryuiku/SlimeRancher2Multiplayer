@@ -141,6 +141,7 @@ internal sealed class ReSyncManager
         SendConversationsPacket(endPoint);
         SendEventsRaisedPacket(endPoint);
         SendTornadosPacket(endPoint);
+        SendUnlocksPacket(endPoint);
 
         SrLogger.LogMessage($"Player {playerId} resynced!", $"Player {playerId} ({endPoint}) resynced!");
     }
@@ -250,6 +251,7 @@ internal sealed class ReSyncManager
             SendTeleporterLinksPacket(client.EndPoint);
             SendDroneCloudPacket(client.EndPoint);
             SendTornadosPacket(client.EndPoint);
+            SendUnlocksPacket(client.EndPoint);
         }
 
         SrLogger.LogMessage($"Resynced {clients.Count} players!");
@@ -367,6 +369,20 @@ internal sealed class ReSyncManager
         catch (Exception ex)
         {
             SrLogger.LogWarning($"Could not send blueprints: {ex.Message}");
+        }
+    }
+
+    // Palettes, sanctuary themes, slime appearances, secret styles and rewards kiosk progress:
+    // kept per player by the game, shared from the host's save here.
+    private static void SendUnlocksPacket(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(UnlockLookup.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send unlocks: {ex.Message}");
         }
     }
 
