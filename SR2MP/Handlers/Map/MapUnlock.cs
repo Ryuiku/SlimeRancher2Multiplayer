@@ -12,6 +12,21 @@ internal sealed class MapUnlockHandler : BasePacketHandler<MapUnlockPacket>
 {
     protected override bool Handle(MapUnlockPacket packet, IPEndPoint? _)
     {
+        if (!string.IsNullOrEmpty(packet.EventKey))
+        {
+            try
+            {
+                if (SR2MP.Shared.Utils.MapEvents.Record(packet.EventKey, packet.NodeID))
+                    SR2MP.Shared.Utils.MapEvents.Refresh();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not record {packet.EventKey} {packet.NodeID}: {ex.Message}");
+            }
+
+            return true;
+        }
+
         // Record the unlock first: the visuals below need the map objects to be loaded, and when
         // they threw, the unlock was neither saved here nor passed on to the other players.
         try

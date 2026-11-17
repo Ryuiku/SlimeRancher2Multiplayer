@@ -9,6 +9,9 @@ internal static class OnMapUnlocked
 {
     public static void Postfix(MapNodeActivator __instance)
     {
+        if (HandlingPacket || __instance._fogRevealEvent == null)
+            return;
+
         var packet = new MapUnlockPacket
         {
             // NodeID = __instance._fogRevealEvent._dataKey,

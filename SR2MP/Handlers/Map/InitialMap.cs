@@ -11,23 +11,32 @@ internal sealed class InitialMapLoadHandler : BasePacketHandler<InitialMapPacket
 {
     protected override bool Handle(InitialMapPacket packet, IPEndPoint? _)
     {
-        var eventModel = SceneContext.Instance.eventDirector._model;
-        var dict = eventModel.table[MapEventKey] = new CppCollections.Dictionary<string, EventRecordModel.Entry>();
-
-        foreach (var node in packet.UnlockedNodes)
+        // Added to what this save already has: the host's reveals and zone unlocks, and the
+        // joiner keeps its own. The table used to be replaced and nothing was refreshed, so the
+        // map kept showing only what the joiner had explored.
+        var added = 0;
+        try
         {
-            dict[node] = new EventRecordModel.Entry
+            foreach (var node in packet.UnlockedNodes)
             {
-                count = 1,
-                createdRealTime = 0,
-                createdGameTime = 0,
-                dataKey = node,
-                eventKey = MapEventKey,
-                updatedRealTime = 0,
-                updatedGameTime = 0
-            };
+                if (!string.IsNullOrEmpty(node) && SR2MP.Shared.Utils.MapEvents.Record(MapEventKey, node))
+                    added++;
+            }
+
+            var zoneKey = SR2MP.Shared.Utils.MapEvents.ZoneEventKey;
+            foreach (var zone in packet.UnlockedZones)
+            {
+                if (!string.IsNullOrEmpty(zone) && SR2MP.Shared.Utils.MapEvents.Record(zoneKey, zone))
+                    added++;
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not apply the host's map: {ex.Message}");
         }
 
+        SR2MP.Shared.Utils.MapEvents.Refresh();
+        SrLogger.LogMessage($"Map: host sent {packet.UnlockedNodes.Count} revealed areas and {packet.UnlockedZones.Count} zones, {added} were new here.");
         return false;
     }
 }

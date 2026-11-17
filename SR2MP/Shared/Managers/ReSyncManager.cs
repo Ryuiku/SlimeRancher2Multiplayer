@@ -398,7 +398,11 @@ internal sealed class ReSyncManager
         foreach (var map in maps)
             mapsList.Add(map.Key);
 
-        return new InitialMapPacket { UnlockedNodes = mapsList };
+        return new InitialMapPacket
+        {
+            UnlockedNodes = mapsList,
+            UnlockedZones = SR2MP.Shared.Utils.MapEvents.Keys(SR2MP.Shared.Utils.MapEvents.ZoneEventKey)
+        };
     }
 
     private static void SendEventsRaisedPacket(IPEndPoint client)
