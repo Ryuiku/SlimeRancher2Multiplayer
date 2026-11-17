@@ -11,32 +11,8 @@ internal static class NetworkWeatherManager
 {
     public static WeatherRegistry Registry => SceneContext.Instance.WeatherRegistry;
 
-    public static WeatherDirector Director
-    {
-        get
-        {
-            if (IsSceneDirector(director))
-                return director;
-
-            // Prefer the director that is actually in the loaded scene, not a prefab or leftover copy
-            // (those have no VFX control and throw when a weather state is stopped on them).
-            var all = Resources.FindObjectsOfTypeAll<WeatherDirector>();
-            var inScene = all.FirstOrDefault(IsSceneDirector);
-
-            if (inScene)
-            {
-                director = inScene!;
-                return director;
-            }
-
-            // None in the scene right now (a zone is loading). Use whatever exists for this one
-            // update, but don't remember it, so the real one is picked up as soon as it is there.
-            return all.FirstOrDefault()!;
-        }
-    }
-
-    private static bool IsSceneDirector(WeatherDirector candidate)
-        => candidate && candidate.gameObject.scene.IsValid() && candidate.gameObject.activeInHierarchy;
+    private static bool IsSceneDirector(WeatherDirector? candidate)
+        => candidate && candidate!.gameObject.scene.IsValid() && candidate.gameObject.activeInHierarchy;
 
     public static LightningStrike Lightning
     {
@@ -52,7 +28,6 @@ internal static class NetworkWeatherManager
     }
 
     private static LightningStrike lightning;
-    private static WeatherDirector director;
 
     public static readonly Dictionary<int, WeatherStateDefinition> WeatherStates = new();
 
@@ -91,9 +66,25 @@ internal static class NetworkWeatherManager
         }
     }
 
+    // The states the host has running in each zone (by zone name), from the last packet. Kept so
+    // a zone that loads between packets gets its weather at once.
+    private static readonly Dictionary<string, List<WeatherStateDefinition>> RunningByZone = new();
+
+    private static int lastMapSignature;
+
+    /// <summary>
+    /// Client: takes the host's forecast as it is. Each zone's forecast is rebuilt in full (upcoming
+    /// entries too, so the map shows them) and its forecast-unlocked flag set. The registry update
+    /// stays blocked here, so nothing upcoming is started locally; only states that changed are
+    /// started or stopped, on the zone's own director, so weather that is already running is left alone.
+    /// </summary>
     internal static void Apply(WeatherPacket packet, bool immediate)
     {
-        if (SceneContext.Instance.WeatherRegistry == null)
+        if (Main.Server.IsRunning)
+            return;
+
+        var registry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
+        if (!registry || registry!._zones == null)
         {
             SrLogger.LogDebug("NetworkWeatherManager.Apply: WeatherRegistry not ready, dropping packet");
             return;
@@ -104,150 +95,246 @@ internal static class NetworkWeatherManager
 
         try
         {
-            var registry = Registry;
-            var localDirector = Director;
-
-            var zoneKeys = new List<ZoneDefinition>();
-            foreach (var zone in registry._zones)
-                zoneKeys.Add(zone.Key);
-
-            foreach (var zoneKey in zoneKeys)
+            var zones = new List<(ZoneDefinition Key, WeatherRegistry.ZoneWeatherData Data)>();
+            foreach (var pair in registry._zones)
             {
-                if (zoneKey == null || string.IsNullOrEmpty(zoneKey.name))
-                    continue;
-
-                if (!packet.Zones.TryGetValue(zoneKey.name, out var data))
-                    continue;
-
-                var zone = registry._zones[zoneKey];
-
-                var forecastCopy = new List<WeatherModel.ForecastEntry>();
-                foreach (var forecast in zone.Forecast)
-                    forecastCopy.Add(forecast);
-
-                foreach (var forecast in forecastCopy)
-                {
-                    // One weather state failing to stop must not abort the whole update,
-                    // or weather stays out of sync for the rest of the session.
-                    try
-                    {
-                        var patternInstance = registry.GetWeatherPatternInstance(
-                            zoneKey,
-                            forecast.Pattern
-                        );
-
-                        if (patternInstance == null)
-                        {
-                            localDirector.StopState(
-                                forecast.State.Cast<IWeatherState>(),
-                                zone.Parameters
-                            );
-                        }
-                        else
-                        {
-                            registry.StopPatternState(
-                                zoneKey,
-                                patternInstance,
-                                forecast.State
-                            );
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        LogWeatherProblem($"Weather: could not stop a state in {zoneKey.name}: {ex.Message}");
-                    }
-                }
-
-                // Build the new forecast before touching the old one, so one bad entry can't leave
-                // the zone with no weather at all.
-                var newEntries = new List<WeatherModel.ForecastEntry>();
-
-                foreach (var forecast in data.WeatherForecasts)
-                {
-                    try
-                    {
-                        if (forecast.State == null)
-                            continue;
-
-                        var pattern = WeatherUpdateHelper.GetPatternForZoneAndState(zoneKey, forecast.State.name);
-
-                        newEntries.Add(new WeatherModel.ForecastEntry
-                        {
-                            State = forecast.State.Cast<IWeatherState>(),
-                            Pattern = pattern,
-                            Started = forecast.WeatherStarted,
-                            StartTime = forecast.StartTime,
-                            EndTime = forecast.EndTime
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        LogWeatherProblem($"Weather: skipped a forecast entry in {zoneKey.name}: {ex.Message}");
-                    }
-                }
-
-                zone.Forecast.Clear();
-                zone.Parameters.WindDirection = data.WindSpeed;
-
-                foreach (var entry in newEntries)
-                    zone.Forecast.Add(entry);
+                if (pair.Key && !string.IsNullOrEmpty(pair.Key.name) && pair.Value != null)
+                    zones.Add((pair.Key, pair.Value));
             }
 
-            if (!registry._zones.TryGetValue(localDirector.Zone, out var activeZone))
-                return;
+            var signature = new HashCode();
 
-            var activeCopy = new List<WeatherModel.ForecastEntry>();
-            foreach (var activeForecast in activeZone.Forecast)
-                activeCopy.Add(activeForecast);
-
-            foreach (var forecast in activeCopy)
+            foreach (var (zoneKey, zone) in zones)
             {
+                packet.Zones.TryGetValue(zoneKey.name, out var data);
+
                 try
                 {
-                    var patternInstance = registry.GetWeatherPatternInstance(
-                        localDirector.Zone,
-                        forecast.Pattern
-                    );
-
-                    if (patternInstance == null)
-                    {
-                        localDirector.RunState(forecast.State.Cast<IWeatherState>(), activeZone.Parameters, immediate);
-                    }
-                    else
-                    {
-                        registry.RunPatternState(
-                            localDirector.Zone,
-                            patternInstance,
-                            forecast.State,
-                            immediate
-                        );
-                    }
+                    RebuildForecast(zoneKey, zone, data, ref signature);
                 }
                 catch (Exception ex)
                 {
-                    LogWeatherProblem($"Weather: could not start a state: {ex.Message}");
+                    LogWeatherProblem($"Weather: could not apply the forecast of {zoneKey.name}: {ex.Message}");
                 }
-            }
 
-            if (ActiveMapUI != null)
-            {
-                var zoomedOutUI = ActiveMapUI._zoomedOutUI;
-                if (zoomedOutUI != null && zoomedOutUI._zoneMarkerUIs != null)
+                var running = new List<WeatherStateDefinition>();
+                if (data != null)
                 {
-                    foreach (var markerUI in zoomedOutUI._zoneMarkerUIs)
+                    foreach (var forecast in data.Forecasts)
                     {
-                        var zoneMarkerUI = markerUI.TryCast<ZoneMarkerUI>();
-                        if (zoneMarkerUI != null)
-                        {
-                            zoneMarkerUI.SetUpWeather();
-                        }
+                        if (forecast.Started && forecast.State && !running.Any(s => s.Pointer == forecast.State!.Pointer))
+                            running.Add(forecast.State!);
                     }
                 }
+
+                RunningByZone[zoneKey.name] = running;
+                SyncRunningStates(zoneKey, zone, running, immediate);
+            }
+
+            var mapSignature = signature.ToHashCode();
+            if (mapSignature != lastMapSignature)
+            {
+                lastMapSignature = mapSignature;
+                RefreshMapWeather();
             }
         }
         finally
         {
             HandlingPacket = false;
+        }
+    }
+
+    private static void RebuildForecast(
+        ZoneDefinition zoneKey,
+        WeatherRegistry.ZoneWeatherData zone,
+        WeatherZoneData? data,
+        ref HashCode signature)
+    {
+        // Built before the old one is touched, so one bad entry can't leave the zone with nothing.
+        var newEntries = new List<WeatherModel.ForecastEntry>();
+
+        if (data != null)
+        {
+            foreach (var forecast in data.Forecasts)
+            {
+                if (!forecast.State)
+                    continue;
+
+                var pattern = WeatherUpdateHelper.ResolvePattern(zoneKey, zone, forecast.PatternName, forecast.State!);
+
+                // The map reads the entry's pattern (its icon); an entry without one would break it.
+                // Its state still runs if the host has it running (see Apply).
+                if (!pattern)
+                    continue;
+
+                newEntries.Add(new WeatherModel.ForecastEntry
+                {
+                    State = forecast.State!.Cast<IWeatherState>(),
+                    Pattern = pattern,
+                    Started = forecast.Started,
+                    StartTime = forecast.StartTime,
+                    EndTime = forecast.EndTime,
+                    IsEndTimeKnown = forecast.IsEndTimeKnown
+                });
+
+                signature.Add(pattern!.Pointer);
+                signature.Add(forecast.State.Pointer);
+                signature.Add(forecast.Started);
+                signature.Add(forecast.StartTime);
+                signature.Add(forecast.EndTime);
+            }
+        }
+
+        // Cleared in place: the game holds on to this list.
+        var list = zone.Forecast;
+        if (list != null)
+        {
+            list.Clear();
+            foreach (var entry in newEntries)
+                list.Add(entry);
+        }
+
+        var unlocked = data?.ForecastUnlocked ?? false;
+        zone.ForecastUnlocked = unlocked;
+        signature.Add(zoneKey.name);
+        signature.Add(unlocked);
+
+        if (data != null && zone.Parameters != null)
+            zone.Parameters.WindDirection = data.WindDirection;
+    }
+
+    /// <summary>
+    /// Puts the zone's own director (if that zone is loaded here) on exactly the states the host has
+    /// running: stops what the host no longer runs, starts what it newly runs, leaves the rest alone.
+    /// </summary>
+    private static void SyncRunningStates(
+        ZoneDefinition zoneKey,
+        WeatherRegistry.ZoneWeatherData zone,
+        List<WeatherStateDefinition> wanted,
+        bool immediate)
+    {
+        WeatherDirector? zoneDirector;
+        try
+        {
+            zoneDirector = zone.Director;
+        }
+        catch
+        {
+            return;
+        }
+
+        if (!IsSceneDirector(zoneDirector))
+            return;
+
+        var director = zoneDirector!;
+        var parameters = zone.Parameters;
+
+        var current = new List<IWeatherState>();
+        try
+        {
+            var runningStates = director._runningStates;
+            if (runningStates != null)
+            {
+                foreach (var state in runningStates)
+                {
+                    if (state != null)
+                        current.Add(state);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogWeatherProblem($"Weather: could not read the running states of {zoneKey.name}: {ex.Message}");
+            return;
+        }
+
+        foreach (var state in current)
+        {
+            if (wanted.Any(w => w.Pointer == state.Pointer))
+                continue;
+
+            try
+            {
+                director.StopState(state, parameters, immediate);
+            }
+            catch (Exception ex)
+            {
+                LogWeatherProblem($"Weather: could not stop a state in {zoneKey.name}: {ex.Message}");
+            }
+        }
+
+        foreach (var state in wanted)
+        {
+            if (current.Any(c => c.Pointer == state.Pointer))
+                continue;
+
+            try
+            {
+                director.RunState(state.Cast<IWeatherState>(), parameters, immediate);
+            }
+            catch (Exception ex)
+            {
+                LogWeatherProblem($"Weather: could not start {state.name} in {zoneKey.name}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Client: a zone's weather director just registered (the zone loaded). The game would start the
+    /// registry's own running patterns on it, which are not the host's here, so start the host's.
+    /// </summary>
+    internal static void OnZoneDirectorRegistered(ZoneDefinition zoneKey)
+    {
+        if (Main.Server.IsRunning || !zoneKey)
+            return;
+
+        var registry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
+        if (!registry || registry!._zones == null)
+            return;
+
+        if (!registry._zones.TryGetValue(zoneKey, out var zone) || zone == null)
+            return;
+
+        if (!RunningByZone.TryGetValue(zoneKey.name, out var wanted))
+            return;
+
+        var wasHandling = HandlingPacket;
+        HandlingPacket = true;
+        try
+        {
+            SyncRunningStates(zoneKey, zone, wanted, true);
+        }
+        finally
+        {
+            HandlingPacket = wasHandling;
+        }
+    }
+
+    internal static void ResetSession()
+    {
+        RunningByZone.Clear();
+        lastMapSignature = 0;
+    }
+
+    // Redraws the weather icons of an open map; a map opened later draws them itself.
+    private static void RefreshMapWeather()
+    {
+        try
+        {
+            var zoomedOutUI = ActiveMapUI ? ActiveMapUI!._zoomedOutUI : null;
+            if (zoomedOutUI == null || zoomedOutUI._zoneMarkerUIs == null)
+                return;
+
+            foreach (var markerUI in zoomedOutUI._zoneMarkerUIs)
+            {
+                var zoneMarkerUI = markerUI != null ? markerUI.TryCast<ZoneMarkerUI>() : null;
+                if (zoneMarkerUI)
+                    zoneMarkerUI!.SetUpWeather();
+            }
+        }
+        catch (Exception ex)
+        {
+            LogWeatherProblem($"Weather: could not refresh the map: {ex.Message}");
         }
     }
 }

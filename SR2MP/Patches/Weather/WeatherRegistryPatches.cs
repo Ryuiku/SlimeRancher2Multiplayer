@@ -1,6 +1,7 @@
 using HarmonyLib;
 using Il2CppMonomiPark.SlimeRancher.Weather;
 using Il2CppMonomiPark.SlimeRancher.World;
+using SR2MP.Client.Managers;
 using SR2MP.Server.Managers;
 
 namespace SR2MP.Patches.Weather;
@@ -47,9 +48,29 @@ internal static class WeatherRegistryPatches
         }
     }
 
-    // On clients the game's own calculation can throw (the weather registry isn't simulated locally),
-    // which spammed the log every time the map was drawn. Fill the map data from the synced forecast instead.
+    // Client: the zone just loaded. The host's running states go on its director (see NetworkWeatherManager).
+    [HarmonyPatch(nameof(WeatherRegistry.RegisterDirector)), HarmonyPostfix]
+    public static void RegisterDirectorPostfix(ZoneDefinition zone)
+    {
+        if (!Main.Client.IsConnected || Main.Server.IsRunning)
+            return;
+
+        try
+        {
+            NetworkWeatherManager.OnZoneDirectorRegistered(zone);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Weather: starting the host's weather in a loaded zone failed: {ex.Message}");
+        }
+    }
+
+    // The client's forecast is the host's (NetworkWeatherManager), so the game's own map calculation
+    // normally works there. Should it throw, or find nothing for an unlocked zone that has a forecast,
+    // the icons are filled from the synced forecast instead. The host's map is left to the game.
     private static bool loggedMapDataFailure;
+
+    private static bool IsClientOnly => Main.Client.IsConnected && !Main.Server.IsRunning;
 
     [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyFinalizer]
     public static Exception? CalculateZoneMapDataFinalizer(Exception? __exception, WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
@@ -66,7 +87,7 @@ internal static class WeatherRegistryPatches
         try
         {
             if (zoneMapData != null)
-                CalculateZoneMapDataPostfix(__instance, zoneMapData, mapData);
+                FillFromForecast(__instance, zoneMapData, mapData);
         }
         catch (Exception ex)
         {
@@ -79,28 +100,52 @@ internal static class WeatherRegistryPatches
     [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyPostfix]
     public static void CalculateZoneMapDataPostfix(WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
     {
-        if (mapData == null)
+        if (!IsClientOnly || zoneMapData == null)
             return;
 
-        if (mapData.Count > 0)
+        try
+        {
+            FillFromForecast(__instance, zoneMapData, mapData);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"CalculateZoneMapData fill failed: {ex.Message}");
+        }
+    }
+
+    private static void FillFromForecast(WeatherRegistry registry, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
+    {
+        if (mapData == null || mapData.Count > 0)
             return;
 
-        var zoneDef = zoneMapData.WeatherZone != null ? zoneMapData.WeatherZone : zoneMapData.PrimaryZone;
-        if (zoneDef == null)
+        var zoneDef = zoneMapData.WeatherZone ? zoneMapData.WeatherZone : zoneMapData.PrimaryZone;
+        if (!zoneDef)
             return;
 
-        if (!__instance._zones.TryGetValue(zoneDef, out var zoneWeatherData))
+        if (!registry._zones.TryGetValue(zoneDef, out var zoneWeatherData) || zoneWeatherData == null)
+            return;
+
+        if (!zoneWeatherData.ForecastUnlocked)
             return;
 
         var forecastList = zoneWeatherData.Forecast;
         if (forecastList == null)
             return;
 
+        var excluded = zoneMapData.ExcludedWeatherPatterns;
+        var now = SceneContext.Instance ? SceneContext.Instance.TimeDirector._worldModel.worldTime : 0d;
+
         foreach (var forecast in forecastList)
         {
-            if (forecast.Pattern == null || forecast.Pattern.Metadata == null)
+            if (forecast == null || !forecast.Pattern || !forecast.Pattern.Metadata || forecast.State == null)
                 continue;
-            
+
+            if (forecast.IsEndTimeKnown && forecast.EndTime <= now)
+                continue;
+
+            if (excluded != null && excluded.Contains(forecast.Pattern))
+                continue;
+
             var present = false;
             foreach (var existing in mapData)
             {
@@ -114,14 +159,12 @@ internal static class WeatherRegistryPatches
             if (present)
                 continue;
 
-            var mapDataEntry = new ZoneWeatherMapData();
-            
-            mapDataEntry.Metadata = forecast.Pattern.Metadata;
-
             var stateDef = forecast.State.TryCast<WeatherStateDefinition>();
-            mapDataEntry.MapTier = stateDef != null ? stateDef.MapTier : forecast.State.GetMapTier();
-
-            mapData.Add(mapDataEntry);
+            mapData.Add(new ZoneWeatherMapData
+            {
+                Metadata = forecast.Pattern.Metadata,
+                MapTier = stateDef ? stateDef!.MapTier : forecast.State.GetMapTier()
+            });
         }
     }
 }

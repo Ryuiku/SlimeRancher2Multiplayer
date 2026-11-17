@@ -347,14 +347,17 @@ internal sealed class ReSyncManager
 
     private static void SendWeatherPacket(IPEndPoint client)
     {
-        var weatherRegistry = Resources.FindObjectsOfTypeAll<WeatherRegistry>().FirstOrDefault();
-        if (weatherRegistry == null || weatherRegistry._model == null)
+        var weatherRegistry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
+        if (!weatherRegistry)
+            weatherRegistry = Resources.FindObjectsOfTypeAll<WeatherRegistry>().FirstOrDefault();
+
+        if (!weatherRegistry || weatherRegistry!._zones == null)
         {
-            SrLogger.LogError("WeatherRegistry or model not found!");
+            SrLogger.LogError("WeatherRegistry not found!");
             return;
         }
 
-        var packet = WeatherPacket.CreateFromModel(weatherRegistry._model, PacketType.InitialWeather);
+        var packet = WeatherPacket.CreateFromRegistry(weatherRegistry, PacketType.InitialWeather);
         Main.Server.SendToClient(packet, client);
     }
 

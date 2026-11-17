@@ -223,6 +223,7 @@ public sealed class Main : StarlightExpansionV01
                 Server.OnServerStarted += ResetSessionPlayerState;
                 Client.OnConnected += _ => ResetSessionPlayerState();
                 Client.OnDisconnected += ResetSessionPlayerState;
+                Client.OnDisconnected += SR2MP.Client.Managers.NetworkWeatherManager.ResetSession;
 
                 Application.quitting += new Action(() =>
                 {
