@@ -62,6 +62,11 @@ internal static class OnActorDestroy
             return false;
         }
 
+        // Same for ringtail statues: only the owner turns one back into a slime.
+        if (netActor != null && !netActor.LocallyOwned && actorObj.GetComponent<RingtailStatue>()
+            && (Main.Server.IsRunning || Main.Client.IsConnected))
+            return false;
+
         // Drone destructions are handled differently
         if (actorObj.GetComponent<Il2CppMonomiPark.SlimeRancher.Drone.RanchDrone>() ||
             actorObj.GetComponent<Il2CppMonomiPark.SlimeRancher.Drone.ExplorerDrone>())
