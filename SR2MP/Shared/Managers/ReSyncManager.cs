@@ -377,7 +377,11 @@ internal sealed class ReSyncManager
         var unlockedArray = Il2CppSystem.Linq.Enumerable
             .ToArray(unlocked.Cast<CppCollections.IEnumerable<PediaEntry>>());
 
-        var unlockedIDs = unlockedArray.Select(entry => entry.TryCast<PediaEntry>()?.PersistenceId).ToList();
+        // An entry that is not a PediaEntry or has no id would only be skipped on the other side.
+        var unlockedIDs = unlockedArray
+            .Select(entry => entry.TryCast<PediaEntry>()?.PersistenceId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .ToList();
 
         return new InitialPediaPacket { Entries = unlockedIDs };
     }

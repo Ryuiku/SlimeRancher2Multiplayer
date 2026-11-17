@@ -1,4 +1,5 @@
 using Il2CppMonomiPark.SlimeRancher.Event;
+using Il2CppMonomiPark.SlimeRancher.World;
 
 namespace SR2MP.Shared.Utils;
 
@@ -8,7 +9,25 @@ namespace SR2MP.Shared.Utils;
 /// </summary>
 internal static class MapEvents
 {
+    private const string FallbackZoneEventKey = "zoneUnlocked";
+
     private static string? zoneEventKey;
+
+    // Zone definitions by the data key their unlock record uses, built once per session.
+    private static Dictionary<string, ZoneDefinition>? zonesByKey;
+
+    static MapEvents()
+    {
+        Main.Server.OnServerStarted +=      ClearCache;
+        Main.Client.OnConnected     += _ => ClearCache();
+        Main.Client.OnDisconnected  +=      ClearCache;
+    }
+
+    private static void ClearCache()
+    {
+        zoneEventKey = null;
+        zonesByKey = null;
+    }
 
     internal static string ZoneEventKey
     {
@@ -17,19 +36,98 @@ internal static class MapEvents
             if (zoneEventKey != null)
                 return zoneEventKey;
 
+            // This runs for every game event (through the event table patch), so the fallback is
+            // kept as well once the scene can be asked; otherwise every vac or shot would pay for
+            // the lookup and the exception again.
             try
             {
-                var key = SceneContext.Instance.MapDirector._zoneEventProducer?.KeyPrefix;
-                if (!string.IsNullOrEmpty(key))
-                    return zoneEventKey = key;
+                var context = SceneContext.Instance;
+                if (!context || !context.MapDirector)
+                    return FallbackZoneEventKey;
+
+                var key = context.MapDirector._zoneEventProducer?.KeyPrefix;
+                return zoneEventKey = string.IsNullOrEmpty(key) ? FallbackZoneEventKey : key!;
             }
             catch
             {
-                // fall through
+                return zoneEventKey = FallbackZoneEventKey;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unlocks a zone the way the game does when a player first enters it, so its own reactions
+    /// run here too (weather, radiant slimes, sanctuary, pedia). Writing only the record showed
+    /// the zone on the map, but those caught up only after a reload. Falls back to the record.
+    /// Returns true when the zone was new here.
+    /// </summary>
+    internal static bool RaiseZone(string dataKey)
+    {
+        try
+        {
+            var producer = SceneContext.Instance.MapDirector._zoneEventProducer;
+            if (producer && TryFindZone(producer!, dataKey, out var zone))
+            {
+                if (producer!.HasRecordedEntryForData(zone))
+                    return false;
+
+                var wasHandling = HandlingPacket;
+                HandlingPacket = true;
+                try
+                {
+                    producer.RaiseEventForData(zone);
+                }
+                finally
+                {
+                    HandlingPacket = wasHandling;
+                }
+
+                return true;
             }
 
-            return "zoneUnlocked";
+            SrLogger.LogDebug($"Zone {dataKey} has no zone definition here; recording it directly");
         }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not raise zone unlock {dataKey}, recording it directly: {ex.Message}");
+        }
+
+        return Record(ZoneEventKey, dataKey);
+    }
+
+    private static bool TryFindZone(ZoneEventProducer producer, string dataKey, out ZoneDefinition zone)
+    {
+        if (zonesByKey == null || zonesByKey.Count == 0)
+        {
+            var map = new Dictionary<string, ZoneDefinition>();
+            foreach (var definition in Resources.FindObjectsOfTypeAll<ZoneDefinition>())
+            {
+                if (!definition)
+                    continue;
+
+                try
+                {
+                    var key = producer.GetKeySuffixForData(definition);
+                    if (!string.IsNullOrEmpty(key))
+                        map[key] = definition;
+                }
+                catch
+                {
+                    // a zone the producer can't name is never unlocked through it
+                }
+            }
+
+            zonesByKey = map;
+        }
+
+        if (zonesByKey.TryGetValue(dataKey, out var found) && found)
+        {
+            zone = found;
+            return true;
+        }
+
+        zone = null!;
+        return false;
     }
 
     internal static List<string?> Keys(string eventKey)

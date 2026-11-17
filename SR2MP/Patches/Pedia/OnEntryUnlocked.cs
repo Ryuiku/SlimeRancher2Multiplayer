@@ -1,6 +1,7 @@
 using HarmonyLib;
 using Il2CppMonomiPark.SlimeRancher.Pedia;
 using SR2MP.Packets.Pedia;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Patches.Pedia;
 
@@ -15,7 +16,7 @@ internal static class OnEntryUnlocked
 
     public static void Postfix(PediaEntry entry, bool showPopup)
     {
-        if (HandlingPacket) return;
+        if (HandlingPacket || !NetworkActorManager.CanSendActorChanges) return;
 
         var packet = new PediaUnlockPacket
         {

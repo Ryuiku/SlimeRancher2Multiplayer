@@ -23,10 +23,11 @@ internal sealed class InitialMapLoadHandler : BasePacketHandler<InitialMapPacket
                     added++;
             }
 
-            var zoneKey = SR2MP.Shared.Utils.MapEvents.ZoneEventKey;
+            // Zones go through the game's own unlock, so their weather, radiant slimes,
+            // sanctuary and pedia reactions run here as well.
             foreach (var zone in packet.UnlockedZones)
             {
-                if (!string.IsNullOrEmpty(zone) && SR2MP.Shared.Utils.MapEvents.Record(zoneKey, zone))
+                if (!string.IsNullOrEmpty(zone) && SR2MP.Shared.Utils.MapEvents.RaiseZone(zone))
                     added++;
             }
         }
