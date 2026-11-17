@@ -45,6 +45,9 @@
 | NPC Conversations |   🟩   |                                    Fully functional                                     |
 |  Multiplayer API  |   🟩   |                                    Fully functional                                     |
 
+**Known gaps:**
+- Toy shop: the queue of bought toys still waiting at the kiosk comes from each player's own save, so a joining player whose save still has undelivered toys gets them dispensed into the host's world.
+
 # ⚠ MAKE SURE TO BACK UP YOUR SAVES ⚠
 
 The mod does this for you as a safety net, but it is no substitute for your own backups.
