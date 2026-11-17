@@ -65,12 +65,11 @@ internal static class WeatherRegistryPatches
         }
     }
 
-    // The client's forecast is the host's (NetworkWeatherManager), so the game's own map calculation
-    // normally works there. Should it throw, or find nothing for an unlocked zone that has a forecast,
-    // the icons are filled from the synced forecast instead. The host's map is left to the game.
+    // The client's forecast and ForecastUnlocked are the host's (NetworkWeatherManager), so the game's
+    // own map calculation gives the client the same icons the host sees, and an empty result is the
+    // game's real answer (for example, the next entry is outside the window the map shows). Only if
+    // the calculation throws are the icons filled from the synced forecast instead.
     private static bool loggedMapDataFailure;
-
-    private static bool IsClientOnly => Main.Client.IsConnected && !Main.Server.IsRunning;
 
     [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyFinalizer]
     public static Exception? CalculateZoneMapDataFinalizer(Exception? __exception, WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
@@ -95,22 +94,6 @@ internal static class WeatherRegistryPatches
         }
 
         return null;
-    }
-
-    [HarmonyPatch(nameof(WeatherRegistry.CalculateZoneMapData)), HarmonyPostfix]
-    public static void CalculateZoneMapDataPostfix(WeatherRegistry __instance, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
-    {
-        if (!IsClientOnly || zoneMapData == null)
-            return;
-
-        try
-        {
-            FillFromForecast(__instance, zoneMapData, mapData);
-        }
-        catch (Exception ex)
-        {
-            SrLogger.LogDebug($"CalculateZoneMapData fill failed: {ex.Message}");
-        }
     }
 
     private static void FillFromForecast(WeatherRegistry registry, ZoneMapData zoneMapData, CppCollections.List<ZoneWeatherMapData> mapData)
