@@ -3,6 +3,7 @@ using Il2CppMonomiPark.SlimeRancher.DataModel;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.GordoSlime;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.GordoSlime;
 
@@ -11,6 +12,10 @@ internal sealed class GordoSlimeFeedHandler : BasePacketHandler<GordoSlimeFeedPa
 {
     protected override bool Handle(GordoSlimeFeedPacket packet, IPEndPoint? _)
     {
+        // The sender fed the last piece; the rewards are theirs to give out.
+        if (packet.RequiredFoodCount > 0 && packet.NewFoodCount >= packet.RequiredFoodCount)
+            NetworkGordoSlimeManager.MarkRemoteFinisher(packet.ID);
+
         if (GameState.gordos.TryGetValue(packet.ID, out var gordoSlime))
         {
             gordoSlime.GordoEatenCount = packet.NewFoodCount;

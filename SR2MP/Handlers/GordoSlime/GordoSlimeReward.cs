@@ -28,6 +28,14 @@ internal sealed class GordoSlimeRewardHandler : BasePacketHandler<GordoSlimeRewa
             var prefab = rewardPrefabs[packet.PrefabIndex];
             if (!prefab) return true;
 
+            // An actor crate also arrives as an actor spawn (always so from an older sender).
+            // Creating it here as well left two crates, so skip it when that copy is already here.
+            if (prefab.GetComponent<IdentifiableActor>() && HasNetworkedCopyNear(prefab, packet.Position))
+            {
+                SrLogger.LogDebug($"Gordo {packet.GordoSlimeId} reward {prefab.name} already arrived as an actor");
+                return true;
+            }
+
             HandlingPacket = true;
             var instance = Object.Instantiate(prefab);
             instance.transform.SetPositionAndRotation(packet.Position, packet.Rotation);
@@ -40,5 +48,24 @@ internal sealed class GordoSlimeRewardHandler : BasePacketHandler<GordoSlimeRewa
         }
 
         return true;
+    }
+
+    private static bool HasNetworkedCopyNear(GameObject prefab, Vector3 position)
+    {
+        var type = prefab.GetComponent<Identifiable>()?.identType;
+        if (type == null)
+            return false;
+
+        foreach (var model in ActorManager.Actors.Values)
+        {
+            if (model == null || model.ident != type)
+                continue;
+
+            var gameObject = model.GetGameObject();
+            if (gameObject && (gameObject.transform.position - position).sqrMagnitude < 5f * 5f)
+                return true;
+        }
+
+        return false;
     }
 }

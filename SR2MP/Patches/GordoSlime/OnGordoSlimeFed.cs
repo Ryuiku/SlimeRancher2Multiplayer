@@ -32,6 +32,18 @@ internal static class OnGordoSlimeFed
         if (!__state)
             return;
 
+        // This game fed the last piece, so it is the one that gives out the rewards.
+        try
+        {
+            var model = __instance.GordoModel;
+            if (model != null && model.targetCount > 0 && model.GordoEatenCount >= model.targetCount)
+                NetworkGordoSlimeManager.MarkLocalFinisher(__instance.Id);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not check whether gordo {__instance.Id} is full: {ex.Message}");
+        }
+
         var packet = new GordoSlimeFeedPacket
         {
             ID = __instance.Id,
