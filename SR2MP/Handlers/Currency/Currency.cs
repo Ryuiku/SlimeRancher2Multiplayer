@@ -12,8 +12,15 @@ internal sealed class CurrencyHandler : BasePacketHandler<CurrencyPacket>
 {
     protected override bool Handle(CurrencyPacket packet, IPEndPoint? _)
     {
-        var currency = GameContext.Instance.LookupDirector._currencyList._currencies[packet.CurrencyType - 1];
-        var currencyDefinition = currency!.Cast<ICurrency>();
+        // By persistence id: the list position is not guaranteed to be id - 1.
+        var currency = SR2MP.Shared.Utils.CurrencySnapshot.Find(packet.CurrencyType);
+        if (currency == null)
+        {
+            SrLogger.LogWarning($"Currency {packet.CurrencyType} is unknown here; change skipped");
+            return true;
+        }
+
+        var currencyDefinition = currency.Cast<ICurrency>();
         var difference = packet.NewAmount - SceneContext.Instance.PlayerState.GetCurrency(currencyDefinition);
         
         if (difference == 0)
@@ -24,13 +31,17 @@ internal sealed class CurrencyHandler : BasePacketHandler<CurrencyPacket>
             sourceOfChange = sourceType.TryCast<IUIDisplayData>();
 
         HandlingPacket = true;
-
-        if (difference < 0)
-            SceneContext.Instance.PlayerState.SpendCurrency(currencyDefinition, -difference, sourceOfChange!);
-        else
-            SceneContext.Instance.PlayerState.AddCurrency(currencyDefinition, difference, packet.ShowUINotification, sourceOfChange!);
-
-        HandlingPacket = false;
+        try
+        {
+            if (difference < 0)
+                SceneContext.Instance.PlayerState.SpendCurrency(currencyDefinition, -difference, sourceOfChange!);
+            else
+                SceneContext.Instance.PlayerState.AddCurrency(currencyDefinition, difference, packet.ShowUINotification, sourceOfChange!);
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         return true;
     }
 }

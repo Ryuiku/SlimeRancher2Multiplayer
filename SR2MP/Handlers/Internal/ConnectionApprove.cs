@@ -54,10 +54,24 @@ internal sealed class ConnectionApproveHandler : BasePacketHandler<ConnectionApp
             StartCoroutine(WarnIfWorldNotLoaded());
         }
 
+        // All of the host's currencies; the two fixed ones only when the host sent no list.
         HandlingPacket = true;
-        SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>(), packet.Money);
-        SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>(), packet.RainbowMoney);
-        HandlingPacket = false;
+        try
+        {
+            if (packet.Currencies.Count == 0 || SR2MP.Shared.Utils.CurrencySnapshot.Apply(packet.Currencies) == 0)
+            {
+                SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>(), packet.Money);
+                SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>(), packet.RainbowMoney);
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not apply the host's currencies: {ex.Message}");
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         foreach (var data in packet.NetData)
         {

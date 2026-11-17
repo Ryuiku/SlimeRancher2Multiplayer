@@ -68,7 +68,8 @@ internal sealed class ModSyncAckHandler : BasePacketHandler<ModSyncPacket>
             Money = money,
             RainbowMoney = rainbowMoney,
             AllowCheats = Main.AllowCheats,
-            NetData = netData
+            NetData = netData,
+            Currencies = SR2MP.Shared.Utils.CurrencySnapshot.Collect()
         };
 
         // The connectAck is different because of initialJoin, otherwise another PlayerJoin request will be sent

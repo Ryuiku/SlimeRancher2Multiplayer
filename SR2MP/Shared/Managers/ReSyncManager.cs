@@ -111,7 +111,8 @@ internal sealed class ReSyncManager
                 p => (p.PlayerId, p.Username)),
             Money = money,
             RainbowMoney = rainbowMoney,
-            AllowCheats = Main.AllowCheats
+            AllowCheats = Main.AllowCheats,
+            Currencies = CurrencySnapshot.Collect()
         };
         Main.Server.SendToClient(approvePacket, endPoint);
 
@@ -204,6 +205,7 @@ internal sealed class ReSyncManager
             GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>());
         var rainbowMoney = SceneContext.Instance.PlayerState.GetCurrency(
             GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>());
+        var currencies = CurrencySnapshot.Collect();
 
         SrLogger.LogMessage("Resyncing all players...");
 
@@ -217,7 +219,8 @@ internal sealed class ReSyncManager
                     p => (p.PlayerId, p.Username)),
                 Money = money,
                 RainbowMoney = rainbowMoney,
-                AllowCheats = Main.AllowCheats
+                AllowCheats = Main.AllowCheats,
+                Currencies = currencies
             };
             Main.Server.SendToClient(approvePacket,         client.EndPoint);
 

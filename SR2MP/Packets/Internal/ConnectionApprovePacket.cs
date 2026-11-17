@@ -15,6 +15,10 @@ internal sealed class ConnectionApprovePacket : IPacket
 
     public List<ModNetData> NetData;
 
+    // Every currency the host has (sprinkles and any later ones too), by the currency's
+    // persistence id. Money and RainbowMoney are kept for the first two.
+    public List<(int Id, int Amount, int EverCollected)> Currencies = new();
+
     public PacketType Type => PacketType.ConnectionApprove;
     public PacketReliability Reliability => PacketReliability.Reliable;
     public NetworkChannel Channel => NetworkChannel.Important;
@@ -39,6 +43,14 @@ internal sealed class ConnectionApprovePacket : IPacket
         writer.WritePackedInt(RainbowMoney);
 
         writer.WriteList(NetData, PacketWriterDels.NetObject<ModNetData>.Writer);
+
+        writer.WritePackedUInt((uint)Currencies.Count);
+        foreach (var (id, amount, everCollected) in Currencies)
+        {
+            writer.WritePackedInt(id);
+            writer.WritePackedInt(amount);
+            writer.WritePackedInt(everCollected);
+        }
     }
 
     public void Deserialise(PacketReader reader)
@@ -58,6 +70,11 @@ internal sealed class ConnectionApprovePacket : IPacket
         RainbowMoney = reader.ReadPackedInt();
 
         NetData = reader.ReadList(PacketReaderDels.NetObject<ModNetData>.Reader)!;
+
+        var currencyCount = reader.ReadPackedUInt();
+        Currencies = new List<(int Id, int Amount, int EverCollected)>((int)currencyCount);
+        for (var i = 0; i < currencyCount; i++)
+            Currencies.Add((reader.ReadPackedInt(), reader.ReadPackedInt(), reader.ReadPackedInt()));
     }
 }
 
