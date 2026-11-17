@@ -128,6 +128,7 @@ internal enum PacketType : byte
     DroneExtractionQueue = 131,   // Both Ways                                    Low (on extraction)                   A station's pending Quantum Cloud extraction items (absolute)
     PrismaDisruption = 132,       // Server -> Client                             Low (join, on change, every 2 min)    The host's Labyrinth disruption forecast, the only one any game runs on
     PrismaGroupUnlock = 133,      // Client -> Server                             Low (manual)                          A client unlocked a disruption forecast group; the host runs the unlock
+    SlimeStalk = 83,              // Both Ways                                    Low (on stalk step change)            A tabby's stalk step (crouch, pounce) and stealth, from its owner
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets
     ReservedCompression = 255     // Both Ways                                    Very High                             For packet compression

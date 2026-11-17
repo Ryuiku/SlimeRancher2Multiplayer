@@ -14,8 +14,11 @@ internal static class InitiateYawnDoYawn
         if (HandlingPacket) return;
 
         var networkActor = __instance.GetComponent<NetworkActor>();
-        if (!networkActor.LocallyOwned) return;
+        if (!networkActor || !networkActor.LocallyOwned) return;
 
         Main.SendToAllOrServer(new SloomberYawnPacket { ActorId = networkActor.ActorId, Active = false });
+
+        // This cycle's wind-up must not be sent again after the yawn.
+        InitiateYawnWindUp.MarkYawned(networkActor.ActorId.Value);
     }
 }

@@ -17,7 +17,7 @@
 | Player Inventory  |   🟥   |                  Not stored on the server, use the same save to rejoin                  |
 | Initial Save load |   🟩   |      Everything that is ___currently___ synchronised will be loaded on Player join      |
 |      Slimes       |   🟩   |                          Fully functional (Including Radiant)                           |
-|  Slime behaviour  |   🟨   |  Partially functional (Yolky, Dervish, Sloomber, Gold, Lucky), Tangle & Tabby missing   |
+|  Slime behaviour  |   🟨   |   Partially functional (Yolky, Dervish, Sloomber, Gold, Lucky, Tabby), Tangle partial   |
 |   Gordo Slimes    |   🟩   |                                    Fully functional                                     |
 |  Actors (Items)   |   🟩   |                                    Fully functional                                     |
 |  Resource Nodes   |   🟩   |                                    Fully functional                                     |
