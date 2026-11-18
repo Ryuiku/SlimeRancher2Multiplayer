@@ -482,6 +482,21 @@ internal sealed class ReSyncManager
 
     private static InitialMapPacket CreateMapPacket()
     {
+        // Saves from older versions can have a zone's map areas revealed without the zone. This
+        // normally happened when the server started; anything found now also goes to the players
+        // already here (the joiner gets it in this packet).
+        foreach (var zone in SR2MP.Shared.Utils.MapEvents.RepairZonesFromRevealedAreas())
+        {
+            try
+            {
+                Main.Server.SendToAll(new MapUnlockPacket { NodeID = zone, EventKey = SR2MP.Shared.Utils.MapEvents.ZoneEventKey });
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not share repaired zone {zone}: {ex.Message}");
+            }
+        }
+
         if (!SceneContext.Instance.eventDirector._model.table.TryGetValue(MapEventKey, out var maps))
         {
             maps = new CppCollections.Dictionary<string, EventRecordModel.Entry>();

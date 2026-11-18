@@ -95,6 +95,71 @@ internal static class MapEvents
         return Record(ZoneEventKey, dataKey);
     }
 
+    /// <summary>
+    /// Unlocks zones whose map areas were revealed but whose zone unlock is missing. The game
+    /// only unlocks a zone for the player who walks into it, and older versions of the mod never
+    /// passed that on, so a host save can have Starlight Strand's map areas ("strand1".."strand3")
+    /// revealed and still show the zone as unknown. An area's key is its zone's key followed by a
+    /// number; areas named otherwise (such as the Labyrinth's) are left alone, and only zones the
+    /// game knows are unlocked. Returns the keys of the zones it unlocked.
+    /// </summary>
+    internal static List<string> RepairZonesFromRevealedAreas()
+    {
+        var repaired = new List<string>();
+        try
+        {
+            var context = SceneContext.Instance;
+            if (!context || !context.MapDirector || context.eventDirector?._model == null)
+                return repaired;
+
+            var producer = context.MapDirector._zoneEventProducer;
+            if (!producer)
+                return repaired;
+
+            var candidates = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var area in Keys(MapEventKey))
+            {
+                if (string.IsNullOrEmpty(area))
+                    continue;
+
+                var end = area!.Length;
+                while (end > 0 && char.IsDigit(area[end - 1]))
+                    end--;
+
+                // Only "name" followed by a number: "waterworks" or "strandToLabyrinth" don't
+                // say which zone they are in.
+                if (end == area.Length || end == 0)
+                    continue;
+
+                candidates.Add(area.Substring(0, end));
+            }
+
+            foreach (var zoneKey in candidates)
+            {
+                if (!TryFindZone(producer!, zoneKey, out var zone))
+                    continue;
+
+                if (producer!.HasRecordedEntryForData(zone))
+                    continue;
+
+                if (RaiseZone(zoneKey))
+                {
+                    repaired.Add(zoneKey);
+                    SrLogger.LogMessage($"Map: unlocked zone {zoneKey}, its map areas were revealed but the zone was not.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not unlock zones from revealed map areas: {ex.Message}");
+        }
+
+        if (repaired.Count > 0)
+            Refresh();
+
+        return repaired;
+    }
+
     private static bool TryFindZone(ZoneEventProducer producer, string dataKey, out ZoneDefinition zone)
     {
         // A zone missing from the cache may only have been loaded since it was built; zone

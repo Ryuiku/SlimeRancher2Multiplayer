@@ -36,6 +36,9 @@ internal sealed class InitialMapLoadHandler : BasePacketHandler<InitialMapPacket
             SrLogger.LogWarning($"Could not apply the host's map: {ex.Message}");
         }
 
+        // The host's revealed areas can include a zone neither save has unlocked (older versions).
+        added += SR2MP.Shared.Utils.MapEvents.RepairZonesFromRevealedAreas().Count;
+
         SR2MP.Shared.Utils.MapEvents.Refresh();
         SrLogger.LogMessage($"Map: host sent {packet.UnlockedNodes.Count} revealed areas and {packet.UnlockedZones.Count} zones, {added} were new here.");
         return false;

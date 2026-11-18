@@ -22,6 +22,10 @@ internal static class OnGameLoadPatch
 
     private static void OnServerStarted()
     {
+        // The host's own map: zones whose areas are revealed but were never unlocked here.
+        // First, so an exception in the actor loop below cannot skip it.
+        SR2MP.Shared.Utils.MapEvents.RepairZonesFromRevealedAreas();
+
         foreach (var actor in GameState.identifiables)
         {
             if (actor.value.TryCast<ActorModel>() == null) continue;
