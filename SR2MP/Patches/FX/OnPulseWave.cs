@@ -49,7 +49,8 @@ internal static class OnPulseWave
                 Main.SendToAllOrServer(new PlayerFXPacket
                 {
                     FX = PlayerFXType.VacPulse,
-                    Position = origin.position
+                    Position = origin.position,
+                    Rotation = origin.rotation
                 });
             }
 

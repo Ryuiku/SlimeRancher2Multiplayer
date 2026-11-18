@@ -121,6 +121,15 @@ internal sealed partial class NetworkActorManager
         {
             yield return new WaitForSeconds(2f);
 
+            try
+            {
+                NetworkTangleManager.Tick();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Tangle tick failed: {ex.Message}");
+            }
+
             if (!Main.Server.IsRunning && !Main.Client.IsConnected)
                 continue;
 
@@ -419,6 +428,10 @@ internal sealed partial class NetworkActorManager
                 if (!actor.TryGetNetworkComponent(out var netActor))
                     continue;
 
+                // A tangle bud hanging on another player's stalk: only picking it takes it over.
+                if (!netActor.LocallyOwned && NetworkTangleManager.IsHangingBud(netActor.ActorId.Value))
+                    continue;
+
                 netActor.EnsureOwnerInfo();
 
                 if (!onlyUnownedSlimes)
@@ -498,6 +511,10 @@ internal sealed partial class NetworkActorManager
                     continue;
 
                 if (!actor.TryGetNetworkComponent(out var netActor))
+                    continue;
+
+                // A tangle bud hanging on another player's stalk: only picking it takes it over.
+                if (!netActor.LocallyOwned && NetworkTangleManager.IsHangingBud(netActor.ActorId.Value))
                     continue;
 
                 netActor.EnsureOwnerInfo();

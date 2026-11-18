@@ -108,13 +108,23 @@ internal static class NetworkWeatherManager
             {
                 packet.Zones.TryGetValue(zoneKey.name, out var data);
 
+                var runningPatterns = new List<(WeatherPatternDefinition Pattern, WeatherStateDefinition State, double StartTime)>();
                 try
                 {
-                    RebuildForecast(zoneKey, zone, data, ref signature);
+                    RebuildForecast(zoneKey, zone, data, runningPatterns, ref signature);
                 }
                 catch (Exception ex)
                 {
                     LogWeatherProblem($"Weather: could not apply the forecast of {zoneKey.name}: {ex.Message}");
+                }
+
+                try
+                {
+                    SyncCurrentPatterns(zoneKey, zone, runningPatterns);
+                }
+                catch (Exception ex)
+                {
+                    LogWeatherProblem($"Weather: could not set the map weather of {zoneKey.name}: {ex.Message}");
                 }
 
                 var running = new List<WeatherStateDefinition>();
@@ -148,6 +158,7 @@ internal static class NetworkWeatherManager
         ZoneDefinition zoneKey,
         WeatherRegistry.ZoneWeatherData zone,
         WeatherZoneData? data,
+        List<(WeatherPatternDefinition Pattern, WeatherStateDefinition State, double StartTime)> runningPatterns,
         ref HashCode signature)
     {
         // Built before the old one is touched, so one bad entry can't leave the zone with nothing.
@@ -177,6 +188,9 @@ internal static class NetworkWeatherManager
                     IsEndTimeKnown = forecast.IsEndTimeKnown
                 });
 
+                if (forecast.Started)
+                    runningPatterns.Add((pattern!, forecast.State!, forecast.StartTime));
+
                 signature.Add(pattern!.Pointer);
                 signature.Add(forecast.State.Pointer);
                 signature.Add(forecast.Started);
@@ -201,6 +215,66 @@ internal static class NetworkWeatherManager
 
         if (data != null && zone.Parameters != null)
             zone.Parameters.WindDirection = data.WindDirection;
+    }
+
+    // The client's own pattern objects, one per zone and pattern, reused from packet to packet.
+    private static readonly Dictionary<string, Dictionary<IntPtr, WeatherPattern>> PatternInstances = new();
+
+    private static bool loggedMapPatterns;
+
+    /// <summary>
+    /// The map's weather icons are the zone's current patterns: WeatherRegistry.CalculateZoneMapData
+    /// reads ZoneWeatherData.CurrentWeatherPatterns (each pattern's icon and its active state's tier),
+    /// not the forecast. Only the registry's own RunPatternState fills that list, which never runs on a
+    /// client, so the list is set here to the host's running patterns. Nothing in it starts weather;
+    /// the states themselves run on the zone's director (SyncRunningStates).
+    /// </summary>
+    private static void SyncCurrentPatterns(
+        ZoneDefinition zoneKey,
+        WeatherRegistry.ZoneWeatherData zone,
+        List<(WeatherPatternDefinition Pattern, WeatherStateDefinition State, double StartTime)> running)
+    {
+        var list = zone.CurrentWeatherPatterns;
+        if (list == null)
+            return;
+
+        if (!PatternInstances.TryGetValue(zoneKey.name, out var instances))
+            PatternInstances[zoneKey.name] = instances = new Dictionary<IntPtr, WeatherPattern>();
+
+        list.Clear();
+
+        // A pattern can briefly have two started entries (one state handing over to the next);
+        // the map shows the newest, as the host's does.
+        var newest = new Dictionary<IntPtr, (WeatherPatternDefinition Pattern, WeatherStateDefinition State, double StartTime)>();
+        foreach (var entry in running)
+        {
+            if (!entry.Pattern || !entry.State)
+                continue;
+
+            if (!newest.TryGetValue(entry.Pattern.Pointer, out var kept) || entry.StartTime >= kept.StartTime)
+                newest[entry.Pattern.Pointer] = entry;
+        }
+
+        var added = new HashSet<IntPtr>();
+        foreach (var (pattern, state, _) in running)
+        {
+            if (!pattern || !state || !added.Add(pattern.Pointer))
+                continue;
+
+            var shownState = newest[pattern.Pointer].State;
+
+            if (!instances.TryGetValue(pattern.Pointer, out var instance) || instance == null)
+                instances[pattern.Pointer] = instance = new WeatherPattern(pattern);
+
+            instance._activeState = shownState.Cast<IWeatherState>();
+            list.Add(instance.Cast<IWeatherPattern>());
+        }
+
+        if (!loggedMapPatterns && added.Count > 0)
+        {
+            loggedMapPatterns = true;
+            SrLogger.LogMessage($"Map weather: {zoneKey.name} shows {string.Join(", ", running.Select(r => r.Pattern.name))}");
+        }
     }
 
     /// <summary>
@@ -313,6 +387,7 @@ internal static class NetworkWeatherManager
     internal static void ResetSession()
     {
         RunningByZone.Clear();
+        PatternInstances.Clear();
         lastMapSignature = 0;
     }
 

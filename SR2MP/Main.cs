@@ -225,6 +225,12 @@ public sealed class Main : StarlightExpansionV01
                 Client.OnDisconnected += ResetSessionPlayerState;
                 Client.OnDisconnected += SR2MP.Client.Managers.NetworkWeatherManager.ResetSession;
 
+                // Copies of other players' tangle stalks and vines belong to one session.
+                Server.OnServerStarted += SR2MP.Shared.Managers.NetworkTangleManager.OnServerStarted;
+                Client.OnConnected += _ => SR2MP.Shared.Managers.NetworkTangleManager.ResetSession();
+                Client.OnDisconnected += SR2MP.Shared.Managers.NetworkTangleManager.ResetSession;
+                PlayerManager.OnPlayerAdded += _ => SR2MP.Shared.Managers.NetworkTangleManager.RepeatSoon();
+
                 Application.quitting += new Action(() =>
                 {
                     DiscordRPCManager.Shutdown();

@@ -19,7 +19,7 @@ internal sealed class PlayerFXHandler : BasePacketHandler<PlayerFXPacket>
             if (!IsPlayerSoundDictionary[packet.FX])
             {
                 var fxPrefab = FXManager.PlayerFXMap[packet.FX];
-                FXHelpers.SpawnAndPlayFX(fxPrefab, packet.Position, Quaternion.identity);
+                FXHelpers.SpawnAndPlayFX(fxPrefab, packet.Position, packet.Rotation);
             }
             else
             {

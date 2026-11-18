@@ -265,6 +265,14 @@ internal sealed partial class NetworkActor : MonoBehaviour
                 yield break;
             }
 
+            // A tangle bud hanging on another player's stalk: here it has no stalk to hang from and
+            // would fall. Only picking it (vac) takes it over.
+            if (!hibernating && NetworkTangleManager.IsHangingBud(actorId.Value))
+            {
+                LocallyOwned = false;
+                yield break;
+            }
+
             LocallyOwned = !hibernating;
 
             if (hibernating)

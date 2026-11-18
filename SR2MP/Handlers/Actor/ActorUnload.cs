@@ -25,6 +25,11 @@ internal sealed class ActorUnloadHandler : BasePacketHandler<ActorUnloadPacket>
             component.CurrentOwnerId != packet.SenderId)
             return false;
 
+        // A tangle bud still hanging on its stalk stays with the player who grew it: here it would
+        // have no stalk to hang from and would fall. Picking it (vac) still takes it.
+        if (SR2MP.Shared.Managers.NetworkTangleManager.IsHangingBud(packet.ActorId.Value))
+            return true;
+
         // A joining player whose world isn't loaded yet must not take anything over.
         if (!component.RegionMember!._hibernating && SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges)
         {

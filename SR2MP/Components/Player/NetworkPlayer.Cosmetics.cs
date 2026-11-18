@@ -401,9 +401,16 @@ internal partial class NetworkPlayer
     private const float VacFXForwardOffset = 0.3f;
     private const float VacFXRetrySeconds = 2f;
 
+    // How long the stream keeps showing after the vac stops, so its animation can wind down.
+    private const float VacFXWindDownSeconds = 1f;
+
     private GameObject? vacFxAnchor;
     private ParticleSystem[]? vacFxParticles;
+    private Animator[]? vacFxAnimators;
+    private int vacFxActiveParam;
     private bool vacFxActive;
+    private bool vacFxOn;
+    private float vacFxOffAt;
     private bool vacFxFailed;
     private float nextVacFxTry;
 
@@ -412,11 +419,27 @@ internal partial class NetworkPlayer
         if (IsLocal || vacFxFailed || model == null)
             return;
 
-        var wanted = model.VacMode == (byte)VacuumItem.VacMode.VAC && !avatarHidden && IsLiveAvatar();
+        var visible = !avatarHidden && IsLiveAvatar();
+        var wanted = model.VacMode == (byte)VacuumItem.VacMode.VAC && visible;
         if (!wanted)
         {
-            SetVacFXActive(false);
-            return;
+            if (!visible || !vacFxActive)
+            {
+                SetVacFXActive(false);
+                return;
+            }
+
+            // Let the stream's own animation wind down, then hide it.
+            if (vacFxOn)
+            {
+                SetVacFXAnimating(false);
+                vacFxOffAt = UnityEngine.Time.unscaledTime + VacFXWindDownSeconds;
+            }
+            else if (UnityEngine.Time.unscaledTime >= vacFxOffAt)
+            {
+                SetVacFXActive(false);
+                return;
+            }
         }
 
         try
@@ -441,7 +464,11 @@ internal partial class NetworkPlayer
             anchor.position = origin + (rotation * Vector3.forward * (VacFXForwardOffset * transform.lossyScale.z));
             anchor.rotation = rotation;
 
-            SetVacFXActive(true);
+            if (wanted)
+            {
+                SetVacFXActive(true);
+                SetVacFXAnimating(true);
+            }
         }
         catch (Exception ex)
         {
@@ -506,14 +533,87 @@ internal partial class NetworkPlayer
             SetLayerRecursively(copyTransform, transform.GetChild(0).gameObject.layer);
 
         vacFxParticles = copy.GetComponentsInChildren<ParticleSystem>(true);
+        vacFxAnimators = copy.GetComponentsInChildren<Animator>(true);
+        vacFxActiveParam = vacuumItem._animActiveId;
         vacFxAnchor = anchorObject;
         vacFxActive = false;
+        vacFxOn = false;
 
         SrLogger.LogMessage(
             $"Vac stream for avatar {ID}: {vacFxParticles.Length} particle systems, " +
-            $"{copy.GetComponentsInChildren<Renderer>(true).Length} renderers, scale {sourceTransform.lossyScale}; " +
+            $"{copy.GetComponentsInChildren<Renderer>(true).Length} renderers, " +
+            $"{vacFxAnimators.Length} animators, scale {sourceTransform.lossyScale}; " +
             $"source had: {componentNames}");
         return true;
+    }
+
+    // The game's vac drives its stream through an Animator: the cone mesh and the particles only
+    // show while the vac's "active" parameter is on. The copy keeps that Animator, so set it here.
+    private void SetVacFXAnimating(bool on)
+    {
+        if (vacFxAnimators == null || vacFxOn == on)
+            return;
+
+        vacFxOn = on;
+        SetVacFXEmitting(on);
+
+        foreach (var animator in vacFxAnimators)
+        {
+            if (!animator || !animator.isActiveAndEnabled || animator.runtimeAnimatorController == null)
+                continue;
+
+            try
+            {
+                foreach (var parameter in animator.parameters)
+                {
+                    if (parameter.nameHash != vacFxActiveParam)
+                        continue;
+
+                    switch (parameter.type)
+                    {
+                        case AnimatorControllerParameterType.Bool:
+                            animator.SetBool(vacFxActiveParam, on);
+                            break;
+                        case AnimatorControllerParameterType.Float:
+                            animator.SetFloat(vacFxActiveParam, on ? 1f : 0f);
+                            break;
+                        case AnimatorControllerParameterType.Trigger when on:
+                            animator.SetTrigger(vacFxActiveParam);
+                            break;
+                        case AnimatorControllerParameterType.Trigger:
+                            animator.ResetTrigger(vacFxActiveParam);
+                            break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Vac stream animator on avatar {ID}: {ex.Message}");
+            }
+        }
+    }
+
+    // Once per avatar: the stream's Animator parameters, so a test log shows what drives it.
+    private bool vacFxParamsLogged;
+
+    private void LogVacFXParameters()
+    {
+        if (vacFxParamsLogged || vacFxAnimators == null)
+            return;
+
+        vacFxParamsLogged = true;
+        try
+        {
+            var lines = vacFxAnimators
+                .Where(a => a && a.runtimeAnimatorController != null)
+                .Select(a => $"{a.name}: " + string.Join(", ", a.parameters.Select(p =>
+                    $"{p.name}({p.type}{(p.nameHash == vacFxActiveParam ? ", the vac's active id" : "")})")));
+            SrLogger.LogMessage($"Vac stream animators for avatar {ID}: {string.Join(" | ", lines)}");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not list vac stream animator parameters: {ex.Message}");
+        }
     }
 
     private void SetVacFXActive(bool active)
@@ -524,20 +624,54 @@ internal partial class NetworkPlayer
         vacFxActive = active;
         vacFxAnchor!.SetActive(active);
 
-        if (!active || vacFxParticles == null)
+        // An Animator starts over from its default state when it is enabled again.
+        vacFxOn = false;
+
+        if (!active)
+            return;
+
+        LogVacFXParameters();
+
+        if (vacFxParticles == null)
             return;
 
         // The game may start these from its vac script rather than on enable; start the top ones.
+        SetVacFXEmitting(true);
+    }
+
+    // Starts the top particle systems (with their children), or stops them emitting so the
+    // particles already out fade as they would on the player's own vac.
+    private void SetVacFXEmitting(bool emitting)
+    {
+        if (vacFxParticles == null)
+            return;
+
         foreach (var particles in vacFxParticles)
         {
-            if (!particles || particles.isPlaying)
+            if (!particles)
                 continue;
 
             var parent = particles.transform.parent;
             if (parent && parent.GetComponentInParent<ParticleSystem>())
                 continue;
 
-            particles.Play(true);
+            try
+            {
+                if (emitting)
+                {
+                    if (!particles.isPlaying)
+                        particles.Play(true);
+                }
+                else
+                {
+                    // Also stops child systems that loop under a top system that already ended.
+                    particles.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+                }
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Vac stream particles on avatar {ID}: {ex.Message}");
+            }
         }
     }
 
@@ -548,7 +682,9 @@ internal partial class NetworkPlayer
 
         vacFxAnchor = null;
         vacFxParticles = null;
+        vacFxAnimators = null;
         vacFxActive = false;
+        vacFxOn = false;
     }
 
     private static void StripToFX(GameObject root)
@@ -567,6 +703,10 @@ internal partial class NetworkPlayer
                 component.TryCast<Renderer>() != null ||
                 component.TryCast<MeshFilter>() != null ||
                 component.TryCast<ParticleSystem>() != null ||
+                // The stream's Animator shows the cone and particles; the force field only moves
+                // particles. Neither touches anything in the world.
+                component.TryCast<Animator>() != null ||
+                component.TryCast<ParticleSystemForceField>() != null ||
                 component.TryCast<UnityEngine.VFX.VisualEffect>() != null)
                 continue;
 
