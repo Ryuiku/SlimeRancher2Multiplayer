@@ -408,6 +408,7 @@ internal partial class NetworkPlayer
     private ParticleSystem[]? vacFxParticles;
     private Animator[]? vacFxAnimators;
     private int vacFxActiveParam;
+    private int vacFxVacModeParam;
     private bool vacFxActive;
     private bool vacFxOn;
     private float vacFxOffAt;
@@ -535,6 +536,7 @@ internal partial class NetworkPlayer
         vacFxParticles = copy.GetComponentsInChildren<ParticleSystem>(true);
         vacFxAnimators = copy.GetComponentsInChildren<Animator>(true);
         vacFxActiveParam = vacuumItem._animActiveId;
+        vacFxVacModeParam = vacuumItem._animVacModeId;
         vacFxAnchor = anchorObject;
         vacFxActive = false;
         vacFxOn = false;
@@ -557,6 +559,9 @@ internal partial class NetworkPlayer
         vacFxOn = on;
         SetVacFXEmitting(on);
 
+        // As the game's VacuumItem.UpdateVacAnimators does for the vac's animators: "active" is on
+        // while the vac runs, and "vacMode" tells pulling in from shooting. With only "active" on,
+        // the cone played its shooting animation (a flash at the nozzle) instead of the swirl.
         foreach (var animator in vacFxAnimators)
         {
             if (!animator || !animator.isActiveAndEnabled || animator.runtimeAnimatorController == null)
@@ -566,30 +571,34 @@ internal partial class NetworkPlayer
             {
                 foreach (var parameter in animator.parameters)
                 {
-                    if (parameter.nameHash != vacFxActiveParam)
-                        continue;
-
-                    switch (parameter.type)
-                    {
-                        case AnimatorControllerParameterType.Bool:
-                            animator.SetBool(vacFxActiveParam, on);
-                            break;
-                        case AnimatorControllerParameterType.Float:
-                            animator.SetFloat(vacFxActiveParam, on ? 1f : 0f);
-                            break;
-                        case AnimatorControllerParameterType.Trigger when on:
-                            animator.SetTrigger(vacFxActiveParam);
-                            break;
-                        case AnimatorControllerParameterType.Trigger:
-                            animator.ResetTrigger(vacFxActiveParam);
-                            break;
-                    }
+                    if (parameter.nameHash == vacFxActiveParam || parameter.nameHash == vacFxVacModeParam)
+                        SetParameter(animator, parameter, on);
                 }
             }
             catch (Exception ex)
             {
                 SrLogger.LogDebug($"Vac stream animator on avatar {ID}: {ex.Message}");
             }
+        }
+    }
+
+    private static void SetParameter(Animator animator, AnimatorControllerParameter parameter, bool on)
+    {
+        var id = parameter.nameHash;
+        switch (parameter.type)
+        {
+            case AnimatorControllerParameterType.Bool:
+                animator.SetBool(id, on);
+                break;
+            case AnimatorControllerParameterType.Float:
+                animator.SetFloat(id, on ? 1f : 0f);
+                break;
+            case AnimatorControllerParameterType.Trigger when on:
+                animator.SetTrigger(id);
+                break;
+            case AnimatorControllerParameterType.Trigger:
+                animator.ResetTrigger(id);
+                break;
         }
     }
 
@@ -607,7 +616,7 @@ internal partial class NetworkPlayer
             var lines = vacFxAnimators
                 .Where(a => a && a.runtimeAnimatorController != null)
                 .Select(a => $"{a.name}: " + string.Join(", ", a.parameters.Select(p =>
-                    $"{p.name}({p.type}{(p.nameHash == vacFxActiveParam ? ", the vac's active id" : "")})")));
+                    $"{p.name}({p.type}{(p.nameHash == vacFxActiveParam ? ", the vac's active id" : p.nameHash == vacFxVacModeParam ? ", the vac's mode id" : "")})")));
             SrLogger.LogMessage($"Vac stream animators for avatar {ID}: {string.Join(" | ", lines)}");
         }
         catch (Exception ex)
