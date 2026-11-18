@@ -67,44 +67,13 @@ internal static class SanctuaryRoomThemePatch
     }
 }
 
-// The same change when something writes the room's model directly. The manager drops it if the
-// room patch already sent it.
+// Pre-placed gadgets written to a room's model.
 [HarmonyPatch(typeof(SanctuaryRoomModel))]
 internal static class SanctuaryRoomModelPatch
 {
-    [HarmonyPrefix, HarmonyPatch(nameof(SanctuaryRoomModel.SetTheme))]
-    public static void SetThemePrefix(SanctuaryRoomModel __instance, out string? __state)
-    {
-        __state = null;
-        try
-        {
-            __state = __instance._theme?.ReferenceId;
-        }
-        catch
-        {
-            // ignored
-        }
-    }
-
-    [HarmonyPostfix, HarmonyPatch(nameof(SanctuaryRoomModel.SetTheme))]
-    public static void SetThemePostfix(SanctuaryRoomModel __instance, ThemeDefinition value, string? __state)
-    {
-        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
-            return;
-
-        try
-        {
-            if (!value || HandlingPacket)
-                return;
-
-            NetworkSanctuaryManager.ReportThemeChange(
-                NetworkSanctuaryManager.ResolveRoomId(__instance), __state, value.ReferenceId);
-        }
-        catch (Exception ex)
-        {
-            SrLogger.LogWarning($"Could not share a sanctuary room theme: {ex.Message}");
-        }
-    }
+    // No patch on SanctuaryRoomModel.SetTheme: its code is a plain field setter shared with 32
+    // other methods, so a patch there would run for all of them. Theme changes are sent from
+    // SanctuaryRoomController.SetTheme above.
 
     [HarmonyPostfix, HarmonyPatch(nameof(SanctuaryRoomModel.SetPreplacedGadget))]
     public static void SetPreplacedGadgetPostfix(SanctuaryRoomModel __instance,

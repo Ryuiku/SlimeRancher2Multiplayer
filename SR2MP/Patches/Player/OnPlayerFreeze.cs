@@ -222,21 +222,9 @@ internal static class OnPlayerTeleport
     }
 }
 
-[HarmonyPatch(typeof(TeleportablePlayer), nameof(TeleportablePlayer.SceneGroupChanged))]
-internal static class OnPlayerSceneGroupChanged
-{
-    public static void Postfix([HarmonyArgument(0)] SceneGroup previous, [HarmonyArgument(1)] SceneGroup next)
-    {
-        try
-        {
-            FreezeLog.Record($"Player scene group {(previous ? previous.name : "none")} -> {(next ? next.name : "none")}");
-        }
-        catch
-        {
-            // logging only
-        }
-    }
-}
+// No patch on TeleportablePlayer.SceneGroupChanged: the game's version is an empty function whose
+// code is shared with 883 other methods, so patching it ran this patch for all of them and crashed
+// the game during start-up (builds 5 and 6).
 
 [HarmonyPatch(typeof(CutsceneDirector), nameof(CutsceneDirector.StartCutsceneSequence))]
 internal static class OnCutsceneStart

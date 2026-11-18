@@ -9,10 +9,6 @@ namespace SR2MP.Patches.LandPlots;
 /// and sprinkle canisters are left to the game: drones are handled on their own, moods follow
 /// each slime's owner, and canisters already have one producer (NetworkSprinkleCanisterManager).
 /// </summary>
-// Disabled: patching RanchCellFastForwarder crashes the game during start-up (the MelonLoader log
-// stops at RanchCellFastForwarder.Start, every time, with no error). Until that is understood the
-// ranch catch-up runs on each game as it did before build 5.
-#if RANCH_CELL_PATCHES
 [HarmonyPatch(typeof(RanchCellFastForwarder))]
 internal static class RanchCellPatches
 {
@@ -86,8 +82,6 @@ internal static class RanchCellPatches
             () => cell.FastForwardGardens(__0, __1, __2));
     }
 }
-
-#endif
 
 /// <summary>
 /// Only the player who simulates a ranch area runs its auto-feeders. Two games at the same corral
