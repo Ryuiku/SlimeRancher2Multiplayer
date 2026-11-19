@@ -517,7 +517,10 @@ internal static class NetworkTangleManager
 
         var regionRegistry = SceneContext.Instance ? SceneContext.Instance.RegionRegistry : null;
         var sceneGroup = regionRegistry ? regionRegistry!.CurrentSceneGroup : null;
-        stalk.Init(sceneGroup!, packet.ShouldSpawnSeed, packet.SeedDuration, packet.IsBigSeed);
+        // Always through the seed phase, briefly for a stalk shown grown: a stalk that animates in
+        // from its own Start can do so before its animator's Start, which then hides the plant.
+        var seedDuration = packet.ShouldSpawnSeed ? packet.SeedDuration : 0.05f;
+        stalk.Init(sceneGroup!, true, seedDuration, packet.IsBigSeed);
     }
 
     private static void NoteBud(long stalkId, long budActorId)

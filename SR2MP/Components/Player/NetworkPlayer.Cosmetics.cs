@@ -405,6 +405,9 @@ internal partial class NetworkPlayer
     private const float VacFXWindDownSeconds = 1f;
 
     private GameObject? vacFxAnchor;
+    private GameObject? vacFxCopy;
+    private GameObject? vacFxSource;
+    private bool vacFxAligned;
     private ParticleSystem[]? vacFxParticles;
     private Animator[]? vacFxAnimators;
     private int vacFxActiveParam;
@@ -467,10 +470,10 @@ internal partial class NetworkPlayer
             anchor.rotation = rotation;
 
             if (wanted)
-                LogVacFXStateOnce();
-
-            if (wanted)
             {
+                LogVacFXStateOnce();
+                AlignVacConeOnce();
+
                 SetVacFXActive(true);
                 SetVacFXAnimating(true);
             }
@@ -534,20 +537,22 @@ internal partial class NetworkPlayer
         LogVacFXRenderers(copy);
         copy.SetActive(true);
 
+        // The anchor faces where the avatar looks, so the copy takes the stream's pose relative to
+        // this player's own view (the stream points where the camera looks), not relative to the
+        // vac's origin point, whose axes need not match the view: with those the cone stood upright.
         var copyTransform = copy.transform;
         var sourceTransform = source.transform;
-        if (vacOrigin)
-        {
-            var inverse = Quaternion.Inverse(vacOrigin!.rotation);
-            copyTransform.localPosition = inverse * (sourceTransform.position - vacOrigin.position);
-            copyTransform.localRotation = inverse * sourceTransform.rotation;
-        }
-        else
-        {
-            copyTransform.localPosition = Vector3.zero;
-            copyTransform.localRotation = Quaternion.identity;
-        }
+        var view = source.GetComponentInParent<Camera>() is { } parentCamera && parentCamera
+            ? parentCamera.transform
+            : SceneContext.Instance && SceneContext.Instance.Camera ? SceneContext.Instance.Camera.transform : null;
+        var viewRotation = view ? view!.rotation : vacOrigin ? vacOrigin!.rotation : sourceTransform.rotation;
+        var inverse = Quaternion.Inverse(viewRotation);
+        copyTransform.localPosition = vacOrigin ? inverse * (sourceTransform.position - vacOrigin!.position) : Vector3.zero;
+        copyTransform.localRotation = inverse * sourceTransform.rotation;
         copyTransform.localScale = sourceTransform.lossyScale;
+        vacFxCopy = copy;
+        vacFxSource = source;
+        vacFxAligned = false;
 
         // First-person objects can be on a layer only the player's own camera draws.
         if (transform.childCount > 0)
@@ -735,6 +740,90 @@ internal partial class NetworkPlayer
         }
     }
 
+    // Once the cone has grown out: if it does not point where the avatar aims, the copy is turned
+    // so that it does. The log says which it was, so a test shows whether the pose was right.
+    private float vacFxAlignAt = -1f;
+
+    private void AlignVacConeOnce()
+    {
+        if (vacFxAligned || !vacFxAnchor || !vacFxCopy)
+            return;
+
+        var now = UnityEngine.Time.unscaledTime;
+        if (vacFxAlignAt < 0f || now - vacFxAlignAt > 5f)
+        {
+            vacFxAlignAt = now + 1f;
+            return;
+        }
+
+        if (now < vacFxAlignAt)
+            return;
+
+        try
+        {
+            // The cone is the stream's one big mesh; the particle systems are left out.
+            Renderer? cone = null;
+            var biggest = 0f;
+            foreach (var renderer in vacFxCopy!.GetComponentsInChildren<Renderer>())
+            {
+                if (!renderer || !renderer.enabled || renderer.TryCast<ParticleSystemRenderer>() != null)
+                    continue;
+
+                var size = renderer.bounds.size.sqrMagnitude;
+                if (size > biggest)
+                {
+                    biggest = size;
+                    cone = renderer;
+                }
+            }
+
+            var anchor = vacFxAnchor!.transform;
+            var direction = cone ? Quaternion.Inverse(anchor.rotation) * (cone!.bounds.center - anchor.position) : Vector3.zero;
+
+            // Not grown out yet (the vac only just started): look again shortly.
+            if (direction.magnitude < 0.5f)
+            {
+                vacFxAlignAt = now + 0.5f;
+                return;
+            }
+
+            vacFxAligned = true;
+            var angle = Vector3.Angle(direction, Vector3.forward);
+            var ownCone = OwnConeSize();
+            if (angle < 20f)
+            {
+                SrLogger.LogMessage($"Vac stream on avatar {ID} points along the aim ({angle:0}° off, look pitch {ReceivedLookY:0}°, cone size {cone!.bounds.size}{ownCone})");
+                return;
+            }
+
+            var turn = Quaternion.FromToRotation(direction.normalized, Vector3.forward);
+            var copyTransform = vacFxCopy.transform;
+            copyTransform.localRotation = turn * copyTransform.localRotation;
+            copyTransform.localPosition = turn * copyTransform.localPosition;
+            SrLogger.LogMessage($"Vac stream on avatar {ID} pointed {angle:0}° away from the aim (direction {direction.normalized}, look pitch {ReceivedLookY:0}°), turned to point along it (cone size {cone!.bounds.size}{ownCone})");
+        }
+        catch (Exception ex)
+        {
+            vacFxAligned = true;
+            SrLogger.LogDebug($"Vac stream on avatar {ID}: aligning the cone failed: {ex.Message}");
+        }
+    }
+
+    // This player's own cone, for comparing sizes in the log, when it is showing.
+    private string OwnConeSize()
+    {
+        if (!vacFxSource)
+            return string.Empty;
+
+        foreach (var renderer in vacFxSource!.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            if (renderer && renderer.enabled)
+                return $", this player's own cone {renderer.bounds.size}";
+        }
+
+        return string.Empty;
+    }
+
     // The game's vac drives its stream through an Animator: the cone mesh and the particles only
     // show while the vac's "active" parameter is on. The copy keeps that Animator, so set it here.
     private void SetVacFXAnimating(bool on)
@@ -876,6 +965,8 @@ internal partial class NetworkPlayer
             Destroy(vacFxAnchor);
 
         vacFxAnchor = null;
+        vacFxCopy = null;
+        vacFxSource = null;
         vacFxParticles = null;
         vacFxAnimators = null;
         vacFxActive = false;

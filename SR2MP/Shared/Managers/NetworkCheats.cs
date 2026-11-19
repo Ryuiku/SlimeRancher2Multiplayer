@@ -453,10 +453,12 @@ internal static class NetworkCheats
     }
 
     /// <summary>
-    /// Grows a tangle bud stalk on the ground the player looks at, without the seed wait. The
+    /// Grows a tangle bud stalk on the ground the player looks at, with only a short seed wait. The
     /// stalk is this game's own, so the tangle sync shows it to the others and the bud is a normal
     /// shared actor.
     /// </summary>
+    private const float TangleSeedSeconds = 0.5f;
+
     internal static string GrowTangleStalk()
     {
         var view = CameraTransform();
@@ -487,9 +489,11 @@ internal static class NetworkCheats
             return "the game made no stalk";
         }
 
+        // With a seed phase, as the game grows them: without one the stalk animates in before its
+        // animator's own Start, which then hides the plant again, so nothing showed.
         var regions = scene!.RegionRegistry;
-        stalk.Init(regions ? regions!.CurrentSceneGroup : null, false, 0f, false);
-        return "grown";
+        stalk.Init(regions ? regions!.CurrentSceneGroup : null, true, TangleSeedSeconds, false);
+        return $"growing {hit.distance:0} m away";
     }
 
     // ---------------------------------------------------------------- gardens
