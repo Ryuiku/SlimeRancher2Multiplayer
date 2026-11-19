@@ -444,6 +444,15 @@ internal sealed class ReSyncManager
         {
             SrLogger.LogWarning($"Could not send the resource spawners: {ex.Message}");
         }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkGardenManager.CreateOwnershipSnapshot(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send who grows each garden: {ex.Message}");
+        }
     }
 
     private static void SendUnlocksPacket(IPEndPoint client)

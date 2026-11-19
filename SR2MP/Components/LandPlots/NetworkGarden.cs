@@ -217,6 +217,9 @@ internal sealed class NetworkGarden : MonoBehaviour
         LocallyOwned = true;
         lastActivityTime = UnityEngine.Time.time;
 
+        if (Main.Server.IsRunning && !string.IsNullOrEmpty(Id))
+            NetworkGardenManager.RecordHostOwner(Id!);
+
         SrLogger.LogGarden($"Garden '{Id}' claimed by '{LocalID}' (broadcast={broadcast}, nextSpawnTime={garden?._model?.nextSpawnTime})");
 
         if (!broadcast)
@@ -261,6 +264,14 @@ internal sealed class NetworkGarden : MonoBehaviour
         {
             SrLogger.LogGarden($"Garden '{Id}' released by owner, not taking over (hibernated={IsHibernated}, registered={registered})");
         }
+    }
+
+    /// <summary>A game joining a host: nothing here is ours until the host says so.</summary>
+    internal void ResetForJoin()
+    {
+        CurrentOwnerId = string.Empty;
+        LocallyOwned = false;
+        lastActivityTime = UnityEngine.Time.time;
     }
 
     internal void ResetToVanilla()
@@ -324,6 +335,11 @@ internal sealed class NetworkGarden : MonoBehaviour
             return;
 
         IsHibernated = hibernating;
+
+        // The area's event keeps coming after leaving a game; owning is only for a session.
+        if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+            return;
+
         SrLogger.LogGarden($"Garden '{Id}' hibernation changed: hibernating={hibernating}, locallyOwned={LocallyOwned}");
 
         if (hibernating)
@@ -341,8 +357,9 @@ internal sealed class NetworkGarden : MonoBehaviour
             RestoreCachedState();
             lastActivityTime = UnityEngine.Time.time;
 
-            // Runs before the area's catch-up, so the owner's game is the one that catches up.
-            if (CurrentOwnerId == LocalID && registered)
+            // Runs before the area's catch-up, so the owner's game is the one that catches up. A
+            // garden nobody owns (released while everyone was away) goes to the first game to wake it.
+            if (registered && (string.IsNullOrEmpty(CurrentOwnerId) || CurrentOwnerId == LocalID))
             {
                 SrLogger.LogGarden($"Garden '{Id}' ownership resumed on wake");
                 TakeOwnership();

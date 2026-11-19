@@ -116,6 +116,13 @@ internal static class NetworkGardenPlanting
 
         if (!plot)
         {
+            // A plant that crossed a demolish or a plot change: only gardens hold crops.
+            if (model.typeId != LandPlot.Id.GARDEN)
+            {
+                SrLogger.LogWarning($"Garden {plotId}: the plot is {model.typeId} now, plant ignored");
+                return null;
+            }
+
             var definition = DefinitionFor(model, crop);
             if (definition == null)
             {
@@ -129,6 +136,12 @@ internal static class NetworkGardenPlanting
         }
 
         var catcher = plot!.GetComponentInChildren<GardenCatcher>(true);
+        if (plot.TypeId != LandPlot.Id.GARDEN || !catcher)
+        {
+            SrLogger.LogWarning($"Garden {plotId}: the plot is {plot.TypeId} now, plant ignored");
+            return null;
+        }
+
         var prefab = PrefabFor(catcher, crop, deluxe) ?? PrefabFor(TemplateCatcher(), crop, deluxe);
         if (!prefab)
         {

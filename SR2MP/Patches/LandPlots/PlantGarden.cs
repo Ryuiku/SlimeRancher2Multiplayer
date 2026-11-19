@@ -24,7 +24,9 @@ internal static class PlantGarden
         var packet = new GardenPlantPacket
         {
             ActorType = NetworkActorManager.GetPersistentID(cropId),
-            ID = location._id
+            ID = location._id,
+            Origin = LocalID,
+            Seq = NetworkGardenManager.NextLocalPlotChange(location._id)
         };
 
         Main.SendToAllOrServer(packet);

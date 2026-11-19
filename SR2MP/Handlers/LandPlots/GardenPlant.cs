@@ -13,6 +13,10 @@ internal sealed class GardenPlantHandler : BasePacketHandler<GardenPlantPacket>
     {
         try
         {
+            // The host's copy of a change this game made and has changed again since.
+            if (!IsServerSide && NetworkGardenManager.IsOutdatedOwnChange(packet.ID, packet.Origin, packet.Seq))
+                return true;
+
             Apply(packet);
         }
         catch (Exception ex)
@@ -52,6 +56,10 @@ internal sealed class GardenPlantHandler : BasePacketHandler<GardenPlantPacket>
             return;
         }
 
-        NetworkGardenPlanting.Plant(model, crop, packet.ID);
+        var planted = NetworkGardenPlanting.Plant(model, crop, packet.ID);
+
+        // Our own crop had to be made again here: it is still ours to grow.
+        if (planted && packet.Origin == LocalID && !string.IsNullOrEmpty(packet.Origin))
+            planted!.GetComponent<SR2MP.Components.LandPlots.NetworkGarden>()?.ClaimOnReady();
     }
 }

@@ -23,7 +23,9 @@ internal static class OnDestroyCrop
         var packet = new GardenPlantPacket
         {
             ID = location._id,
-            ActorType = NetworkGardenPlanting.ClearCrop
+            ActorType = NetworkGardenPlanting.ClearCrop,
+            Origin = LocalID,
+            Seq = NetworkGardenManager.NextLocalPlotChange(location._id)
         };
 
         Main.SendToAllOrServer(packet);

@@ -29,6 +29,9 @@ internal readonly struct ChannelKey : IEquatable<ChannelKey>
     public override int GetHashCode()
         => HashCode.Combine(EndPoint, Channel, PacketType);
 
+    internal bool IsFor(IPEndPoint endPoint)
+        => EndPoint.Equals(endPoint);
+
     public override string ToString()
         => $"{EndPoint}:{Channel}:{PacketType}";
 }

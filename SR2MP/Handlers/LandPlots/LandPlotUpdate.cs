@@ -22,6 +22,16 @@ internal sealed class LandPlotUpgradeHandler : LandPlotUpdateHandler<LandPlotUpg
 
         model.upgrades.Add(packet.ID);
 
+        // Not loaded here: the game's deluxe upgrader replants the crop only on a loaded plot, so
+        // the saved crop is switched to the deluxe one here, or the plot loads with the normal crop.
+        if (packet.ID == LandPlot.Upgrade.DELUXE_GARDEN && !model.gameObj && model.resourceGrowerDefinition != null)
+        {
+            var crop = NetworkGardenPlanting.CurrentCrop(model);
+            var deluxe = crop != null ? NetworkGardenPlanting.DefinitionFor(model, crop) : null;
+            if (deluxe != null)
+                model.resourceGrowerDefinition = deluxe;
+        }
+
         if (model.gameObj)
         {
             var landPlotComponent = model.gameObj.GetComponentInChildren<LandPlot>();

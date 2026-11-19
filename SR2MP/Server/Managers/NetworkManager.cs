@@ -173,6 +173,9 @@ internal sealed class NetworkManager
             udpClient?.Client.SendTo(data.Array, data.Offset, data.Count, SocketFlags.None, endPoint);
     }
 
+    public void ForgetEndpoint(IPEndPoint endPoint, bool outgoingOnly = false)
+        => reliabilityManager?.ForgetEndpoint(endPoint, outgoingOnly);
+
     public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType, ushort chunkIndex)
         => reliabilityManager?.HandleAck(sender, packetId, packetType, chunkIndex);
 

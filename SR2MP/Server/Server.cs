@@ -161,8 +161,23 @@ public sealed class SR2MPServer
         }
     }
 
+    /// <summary>The host counts its packets to this endpoint from 1 again, for a player connecting anew.</summary>
+    internal void ForgetOutgoingSequences(IPEndPoint endPoint)
+        => NetworkManager.ForgetEndpoint(endPoint, outgoingOnly: true);
+
     private void OnClientRemoved(ClientInfo client)
-        => MainThreadDispatcher.Instance.Enqueue(() => HandleClientRemoved(client));
+    {
+        try
+        {
+            NetworkManager.ForgetEndpoint(client.EndPoint);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not forget the sequences of {client.PlayerId}: {ex.Message}");
+        }
+
+        MainThreadDispatcher.Instance.Enqueue(() => HandleClientRemoved(client));
+    }
 
     private void HandleClientRemoved(ClientInfo client)
     {

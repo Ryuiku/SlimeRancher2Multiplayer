@@ -277,12 +277,20 @@ internal sealed class ReliabilityManager
         {
             if (!lastProcessedSequence.TryGetValue(key, out var lastSequence))
             {
-                // First packet from this sender on this channel/type
-                lastProcessedSequence[key] = sequenceNumber;
-                return true;
+                // First packet from this sender on this channel/type. Plain ordered packets may
+                // have lost earlier ones for good, so they start from whatever comes. Reliable ones
+                // start at 1 (GetNextSequenceNumber): taking a later one as the start dropped the
+                // first packet for good when it was resent after the second had arrived.
+                if (reliability == PacketReliability.Ordered)
+                {
+                    lastProcessedSequence[key] = sequenceNumber;
+                    return true;
+                }
+
+                lastSequence = 0;
             }
 
-            if (IsSequenceNewer(sequenceNumber, lastSequence) || sequenceNumber == (ushort)(lastSequence + 1))
+            if (IsSequenceNewer(sequenceNumber, lastSequence) || sequenceNumber == NextSequence(lastSequence))
             {
                 if (reliability == PacketReliability.Ordered)
                 {
@@ -290,7 +298,7 @@ internal sealed class ReliabilityManager
                     return true;
                 }
 
-                var expectedSequence = (ushort)(lastSequence + 1);
+                var expectedSequence = NextSequence(lastSequence);
 
                 if (sequenceNumber == expectedSequence)
                 {
@@ -339,7 +347,7 @@ internal sealed class ReliabilityManager
 
         while (buffer.Count > 0)
         {
-            var next = (ushort)(lastProcessedSequence[key] + 1);
+            var next = NextSequence(lastProcessedSequence[key]);
             if (!buffer.TryGetValue(next, out var bufferedAction))
                 break;
 
@@ -543,6 +551,32 @@ internal sealed class ReliabilityManager
         {
             SrLogger.LogPacketAcknowledge($"Could not send to {destination}: {ex.Message}");
         }
+    }
+
+    // Sequence numbers go from ushort.MaxValue back to 1, never 0.
+    private static ushort NextSequence(ushort sequence)
+        => sequence == ushort.MaxValue ? (ushort)1 : (ushort)(sequence + 1);
+
+    /// <summary>
+    /// Forgets the sequences kept for this endpoint (only the ones we send with, if asked). A
+    /// player who connects again from the same address (through a tunnel or relay) counts from 1.
+    /// </summary>
+    public void ForgetEndpoint(IPEndPoint endPoint, bool outgoingOnly = false)
+    {
+        foreach (var key in sequenceNumbersByChannel.Keys)
+            if (key.IsFor(endPoint))
+                sequenceNumbersByChannel.TryRemove(key, out _);
+
+        if (outgoingOnly)
+            return;
+
+        foreach (var key in lastProcessedSequence.Keys)
+            if (key.IsFor(endPoint))
+                lastProcessedSequence.TryRemove(key, out _);
+
+        foreach (var key in reorderBuffers.Keys)
+            if (key.IsFor(endPoint))
+                reorderBuffers.TryRemove(key, out _);
     }
 
     private static bool IsSequenceNewer(ushort s1, ushort s2)

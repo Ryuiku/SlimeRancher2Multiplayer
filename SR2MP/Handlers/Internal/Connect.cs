@@ -17,6 +17,11 @@ internal sealed class ConnectHandler : BasePacketHandler<ConnectPacket>
             $"Connect request received with PlayerId: {packet.PlayerId}",
             $"Connect request from {clientEp} with PlayerId: {packet.PlayerId}");
 
+        // Connecting again from the same address before the old connection timed out: the new
+        // connection expects the host's packets to count from 1 again.
+        if (Main.Server.ClientManager.TryGetClient(clientEp, out _))
+            Main.Server.ForgetOutgoingSequences(clientEp);
+
         Main.Server.ClientManager.AddClient(clientEp, packet.PlayerId);
 
         var informPacket = new EmptyPacket()

@@ -65,13 +65,93 @@ internal static class NetworkGardenManager
         Gardens[id] = garden;
         SrLogger.LogGarden($"Garden registered in manager: id='{id}', total={Gardens.Count}");
 
-        if (Main.Server.IsRunning &&
-            KnownOwners.TryGetValue(id, out var owner) &&
-            owner != LocalID &&
-            PlayerManager.CheckPlayerExists(owner))
+        KnownOwners.TryGetValue(id, out var owner);
+
+        if (Main.Server.IsRunning)
         {
-            SrLogger.LogGarden($"Garden '{id}' restoring known owner '{owner}' on register");
+            if (!string.IsNullOrEmpty(owner) && owner != LocalID && PlayerManager.CheckPlayerExists(owner))
+            {
+                SrLogger.LogGarden($"Garden '{id}' restoring known owner '{owner}' on register");
+                garden.SetOwner(owner);
+            }
+            else if (owner == null && garden.LocallyOwned)
+            {
+                // The host owns what it loads first; the players are told, so a player waking the
+                // garden does not take it from the host thinking nobody has it.
+                QueueClaim(id);
+            }
+        }
+        else if (!string.IsNullOrEmpty(owner))
+        {
+            // The host's decision arrived before this game had the garden loaded.
             garden.SetOwner(owner);
+        }
+    }
+
+    // This game's own count of plant and clear changes per plot (see GardenPlantPacket).
+    private static readonly Dictionary<string, ushort> LocalPlotChanges = new();
+
+    internal static ushort NextLocalPlotChange(string plotId)
+    {
+        LocalPlotChanges.TryGetValue(plotId, out var count);
+        count = count == ushort.MaxValue ? (ushort)1 : (ushort)(count + 1);
+        LocalPlotChanges[plotId] = count;
+        return count;
+    }
+
+    /// <summary>An echo of this game's own plot change that a newer change here has replaced.</summary>
+    internal static bool IsOutdatedOwnChange(string plotId, string origin, ushort seq)
+        => origin == LocalID
+           && !string.IsNullOrEmpty(origin)
+           && LocalPlotChanges.TryGetValue(plotId, out var latest)
+           && latest != seq;
+
+    internal static void RecordHostOwner(string gardenId)
+    {
+        if (Main.Server.IsRunning)
+            KnownOwners[gardenId] = LocalID;
+    }
+
+    /// <summary>Host: who owns every garden it knows of, for a joining player.</summary>
+    internal static GardenOwnershipPacket CreateOwnershipSnapshot()
+    {
+        var entries = new List<GardenOwnershipPacket.Entry>(KnownOwners.Count);
+        foreach (var (id, owner) in KnownOwners)
+        {
+            if (!string.IsNullOrEmpty(owner))
+                entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = owner });
+        }
+
+        return new GardenOwnershipPacket { Entries = entries };
+    }
+
+    /// <summary>
+    /// A game joining a host keeps its scene: its gardens were made outside the session (no
+    /// network part) or kept what it owned offline. All of them wait for the host's word.
+    /// </summary>
+    private static void OnClientConnected()
+    {
+        KnownOwners.Clear();
+        PendingOwnership.Clear();
+        PendingFinalStates.Clear();
+
+        try
+        {
+            foreach (var spawnResource in Object.FindObjectsOfType<SpawnResource>(true))
+            {
+                if (spawnResource.GetComponent<NetworkGarden>() == null)
+                    spawnResource.gameObject.AddComponent<NetworkGarden>();
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not set up the gardens for the session: {ex.Message}");
+        }
+
+        foreach (var garden in Gardens.Values)
+        {
+            if (garden)
+                garden.ResetForJoin();
         }
     }
 
@@ -98,8 +178,7 @@ internal static class NetworkGardenManager
 
     internal static void ApplyOwnership(string gardenId, string ownerId)
     {
-        if (Main.Server.IsRunning)
-            KnownOwners[gardenId] = ownerId;
+        KnownOwners[gardenId] = ownerId;
 
         if (!Gardens.TryGetValue(gardenId, out var garden) || !garden)
             return;
@@ -196,12 +275,13 @@ internal static class NetworkGardenManager
     static NetworkGardenManager()
     {
         Main.Server.OnServerStarted +=      ClearPending;
-        Main.Client.OnConnected     += _ => ClearPending();
+        Main.Client.OnConnected     += _ => { ClearPending(); OnClientConnected(); };
         Main.Client.OnDisconnected  +=      ClearPending;
     }
 
     private static void ClearPending()
     {
+        LocalPlotChanges.Clear();
         PendingStates.Clear();
         HostSpawnersNotHere.Clear();
         SR2MP.Handlers.LandPlots.ResourceAttachHandler.ClearPending();
@@ -547,7 +627,9 @@ internal static class NetworkGardenManager
 
         foreach (var (gardenId, owner) in KnownOwners.ToArray())
         {
-            if (owner == LocalID || PlayerManager.CheckPlayerExists(owner))
+            // A released garden ("") is not abandoned: its owner comes back to it on waking it,
+            // and anyone awake there has claimed it already.
+            if (string.IsNullOrEmpty(owner) || owner == LocalID || PlayerManager.CheckPlayerExists(owner))
                 continue;
 
             Gardens.TryGetValue(gardenId, out var garden);
