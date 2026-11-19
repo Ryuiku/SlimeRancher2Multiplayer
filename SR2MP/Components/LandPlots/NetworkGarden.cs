@@ -261,14 +261,18 @@ internal sealed class NetworkGarden : MonoBehaviour
         if (!(IsHibernated && CurrentOwnerId == LocalID))
             CurrentOwnerId = string.Empty;
 
-        if (!IsHibernated && registered)
+        // A joining game waits for the host's world: its own save's growth must not win.
+        var worldReady = Main.Server.IsRunning || NetworkActorManager.InitialActorsLoaded;
+        if (!IsHibernated && registered && worldReady)
         {
             SrLogger.LogGarden($"Garden '{Id}' released by owner, taking over");
             TakeOwnership();
         }
         else
         {
-            SrLogger.LogGarden($"Garden '{Id}' released by owner, not taking over (hibernated={IsHibernated}, registered={registered})");
+            // The silence takeover picks it up once this game is ready for it.
+            lastActivityTime = UnityEngine.Time.time;
+            SrLogger.LogGarden($"Garden '{Id}' released by owner, not taking over (hibernated={IsHibernated}, registered={registered}, worldReady={worldReady})");
         }
     }
 

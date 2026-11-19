@@ -159,7 +159,6 @@ public sealed class SR2MPClient
             NetworkDroneManager.PendingOwners.Clear();
             NetworkDroneManager.ClearPrograms();
             NetworkGordoSlimeManager.Reset();
-            NetworkGardenManager.ResetForNewConnection();
 
             serverEndPoint = new IPEndPoint(parsedIp, port);
             udpClient.Connect(serverEndPoint);
@@ -177,6 +176,9 @@ public sealed class SR2MPClient
             isConnected = true;
             MainThreadDispatcher.KeepRunningInBackground();
             connectionAcknowledged = false;
+
+            // After every step that can fail, before any of the host's packets can be handled.
+            NetworkGardenManager.ResetForNewConnection();
 
             var socket = udpClient;
             receiveThread = new Thread(new Action(() => ReceiveLoop(socket, generation)))
@@ -210,6 +212,17 @@ public sealed class SR2MPClient
             SrLogger.LogError($"Error connecting to the Server: {ex}");
             FallbackEndPoint = null;
             TearDownConnection();
+
+            // The gardens were maybe set up for the session already: back to the offline game.
+            try
+            {
+                NetworkGardenManager.OnDisconnected();
+            }
+            catch (Exception resetEx)
+            {
+                SrLogger.LogDebug($"Could not reset the gardens: {resetEx.Message}");
+            }
+
             throw;
         }
     }
