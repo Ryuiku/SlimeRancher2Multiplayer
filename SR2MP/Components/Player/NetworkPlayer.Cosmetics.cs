@@ -461,9 +461,13 @@ internal partial class NetworkPlayer
                 ? rightHand.position
                 : transform.position + (Vector3.up * (1.2f * transform.lossyScale.y));
 
+            var aim = rotation * Vector3.forward;
             var anchor = vacFxAnchor!.transform;
-            anchor.position = origin + (rotation * Vector3.forward * (VacFXForwardOffset * transform.lossyScale.z));
+            anchor.position = origin + (aim * NozzleDistance(origin, aim));
             anchor.rotation = rotation;
+
+            if (wanted)
+                LogVacFXStateOnce();
 
             if (wanted)
             {
@@ -512,6 +516,22 @@ internal partial class NetworkPlayer
             .Distinct());
 
         StripToFX(copy);
+
+        // The avatar's copy is often off to the side of this camera's view or starts folded up
+        // small, and an Animator set to cull would then never run the swirl, so it never shows.
+        foreach (var animator in copy.GetComponentsInChildren<Animator>(true))
+        {
+            if (animator)
+                animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+        }
+
+        foreach (var skinned in copy.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (skinned)
+                skinned.updateWhenOffscreen = true;
+        }
+
+        LogVacFXRenderers(copy);
         copy.SetActive(true);
 
         var copyTransform = copy.transform;
@@ -547,6 +567,172 @@ internal partial class NetworkPlayer
             $"{vacFxAnimators.Length} animators, scale {sourceTransform.lossyScale}; " +
             $"source had: {componentNames}");
         return true;
+    }
+
+    // The avatar's vac model: the renderers its vac palette colours. The stream starts at the
+    // front end of these, along the aim, instead of a guessed distance from the hand.
+    private List<Renderer>? vacGunRenderers;
+
+    private float NozzleDistance(Vector3 origin, Vector3 aim)
+    {
+        if (vacGunRenderers == null)
+        {
+            vacGunRenderers = new List<Renderer>();
+            try
+            {
+                if (!vacPaletteSetupDone)
+                    SetupVacPaletteTargets();
+
+                if (vacApplyPalettes != null)
+                {
+                    foreach (var applyPalette in vacApplyPalettes)
+                    {
+                        var assignments = applyPalette ? applyPalette.PaletteSlotAssignments : null;
+                        if (assignments == null)
+                            continue;
+
+                        foreach (var assignment in assignments)
+                        {
+                            var renderers = assignment?.renderers;
+                            if (renderers == null)
+                                continue;
+
+                            foreach (var renderer in renderers)
+                            {
+                                if (renderer && !vacGunRenderers.Contains(renderer))
+                                    vacGunRenderers.Add(renderer);
+                            }
+                        }
+                    }
+                }
+
+                if (vacMaterialUses != null)
+                {
+                    foreach (var use in vacMaterialUses)
+                    {
+                        if (use.Renderer && !vacGunRenderers.Contains(use.Renderer))
+                            vacGunRenderers.Add(use.Renderer);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Vac model on avatar {ID}: {ex.Message}");
+            }
+
+            SrLogger.LogMessage($"Vac stream on avatar {ID} starts at the front of {vacGunRenderers.Count} vac model renderers");
+        }
+
+        var scale = Mathf.Abs(transform.lossyScale.z);
+        var fallback = VacFXForwardOffset * scale;
+        var furthest = 0f;
+        foreach (var renderer in vacGunRenderers)
+        {
+            if (!renderer || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
+                continue;
+
+            // The furthest corner of the renderer's box along the aim.
+            var bounds = renderer.bounds;
+            var center = Vector3.Dot(bounds.center - origin, aim);
+            var reach = Mathf.Abs(aim.x) * bounds.extents.x + Mathf.Abs(aim.y) * bounds.extents.y + Mathf.Abs(aim.z) * bounds.extents.z;
+            furthest = Mathf.Max(furthest, center + reach);
+        }
+
+        // A box of a model held across the body can reach further than the barrel; keep it sane.
+        return furthest > 0.05f * scale ? Mathf.Clamp(furthest, 0.1f * scale, 1.5f * scale) : fallback;
+    }
+
+    // Once per avatar: what the copy's renderers are, so a test log shows why a part may not show.
+    private void LogVacFXRenderers(GameObject copy)
+    {
+        try
+        {
+            var root = copy.transform;
+            var lines = new List<string>();
+            foreach (var renderer in copy.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!renderer)
+                    continue;
+
+                var materials = renderer.sharedMaterials;
+                var shaders = materials == null
+                    ? "none"
+                    : string.Join("/", materials.Where(m => m).Select(m => $"{m.name}[{(m.shader ? m.shader.name : "?")}]"));
+                var line = $"{renderer.GetIl2CppType().Name} '{renderer.name}' enabled={renderer.enabled} layer={renderer.gameObject.layer} {shaders}";
+
+                var skinned = renderer.TryCast<SkinnedMeshRenderer>();
+                if (skinned)
+                {
+                    var bones = skinned!.bones;
+                    var outside = bones == null ? 0 : bones.Count(b => b && !b.IsChildOf(root));
+                    var rootBone = skinned.rootBone;
+                    line += $" mesh={(skinned.sharedMesh ? skinned.sharedMesh.name : "none")} bones={bones?.Length ?? 0} outsideCopy={outside}" +
+                            $" rootBone={(rootBone ? rootBone.name + (rootBone.IsChildOf(root) ? "" : " (outside the copy)") : "none")}";
+                }
+
+                lines.Add(line);
+            }
+
+            SrLogger.LogMessage($"Vac stream renderers for avatar {ID}: {string.Join(" | ", lines)}");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not list vac stream renderers: {ex.Message}");
+        }
+    }
+
+    // Once per avatar, a moment after the stream turns on: the cone's animation state and where
+    // its renderers are, for the test log.
+    private float vacFxStateLogAt = -1f;
+    private bool vacFxStateLogged;
+
+    private void LogVacFXStateOnce()
+    {
+        if (vacFxStateLogged || vacFxAnimators == null || !vacFxAnchor)
+            return;
+
+        var now = UnityEngine.Time.unscaledTime;
+        if (vacFxStateLogAt < 0f)
+        {
+            vacFxStateLogAt = now + 1.5f;
+            return;
+        }
+
+        if (now < vacFxStateLogAt)
+            return;
+
+        vacFxStateLogged = true;
+        try
+        {
+            var anchorPosition = vacFxAnchor!.transform.position;
+            var parts = new List<string>();
+            foreach (var animator in vacFxAnimators)
+            {
+                if (!animator)
+                    continue;
+
+                var state = animator.GetCurrentAnimatorStateInfo(0);
+                var values = animator.parameters.Select(p => p.type switch
+                {
+                    AnimatorControllerParameterType.Bool => $"{p.name}={animator.GetBool(p.nameHash)}",
+                    AnimatorControllerParameterType.Float => $"{p.name}={animator.GetFloat(p.nameHash):0.##}",
+                    _ => p.name,
+                });
+                parts.Add($"animator '{animator.name}' enabled={animator.isActiveAndEnabled} state={state.fullPathHash} t={state.normalizedTime:0.##} [{string.Join(", ", values)}]");
+            }
+
+            foreach (var renderer in vacFxAnchor.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer)
+                    parts.Add($"'{renderer.name}' visible={renderer.isVisible} size={renderer.bounds.size} {Vector3.Distance(renderer.bounds.center, anchorPosition):0.##} m from the stream start");
+            }
+
+            SrLogger.LogMessage($"Vac stream state for avatar {ID}: {string.Join(" | ", parts)}");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not log vac stream state: {ex.Message}");
+        }
     }
 
     // The game's vac drives its stream through an Animator: the cone mesh and the particles only
