@@ -145,6 +145,12 @@ internal sealed class NetworkGarden : MonoBehaviour
         if (LocallyOwned || IsHibernated)
             return;
 
+        if (!Main.Server.IsRunning && !NetworkActorManager.InitialActorsLoaded)
+        {
+            lastActivityTime = UnityEngine.Time.time;
+            return;
+        }
+
         if (UnityEngine.Time.time - lastActivityTime < takeoverDelay)
             return;
         
@@ -276,6 +282,7 @@ internal sealed class NetworkGarden : MonoBehaviour
 
     internal void ResetToVanilla()
     {
+        hasCachedState = false;
         locallyOwned = false;
         CurrentOwnerId = string.Empty;
 
@@ -336,9 +343,13 @@ internal sealed class NetworkGarden : MonoBehaviour
 
         IsHibernated = hibernating;
 
-        // The area's event keeps coming after leaving a game; owning is only for a session.
+        // The area's event keeps coming after leaving a game; owning is only for a session, and so
+        // is the growth kept for waking (the game grows the garden itself meanwhile).
         if (!Main.Server.IsRunning && !Main.Client.IsConnected)
+        {
+            hasCachedState = false;
             return;
+        }
 
         SrLogger.LogGarden($"Garden '{Id}' hibernation changed: hibernating={hibernating}, locallyOwned={LocallyOwned}");
 
@@ -359,7 +370,9 @@ internal sealed class NetworkGarden : MonoBehaviour
 
             // Runs before the area's catch-up, so the owner's game is the one that catches up. A
             // garden nobody owns (released while everyone was away) goes to the first game to wake it.
-            if (registered && (string.IsNullOrEmpty(CurrentOwnerId) || CurrentOwnerId == LocalID))
+            // A joining game waits for the host's world: its own save's growth must not win.
+            var worldReady = Main.Server.IsRunning || NetworkActorManager.InitialActorsLoaded;
+            if (registered && (CurrentOwnerId == LocalID || (string.IsNullOrEmpty(CurrentOwnerId) && worldReady)))
             {
                 SrLogger.LogGarden($"Garden '{Id}' ownership resumed on wake");
                 TakeOwnership();

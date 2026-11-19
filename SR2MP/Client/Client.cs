@@ -159,6 +159,7 @@ public sealed class SR2MPClient
             NetworkDroneManager.PendingOwners.Clear();
             NetworkDroneManager.ClearPrograms();
             NetworkGordoSlimeManager.Reset();
+            NetworkGardenManager.ResetForNewConnection();
 
             serverEndPoint = new IPEndPoint(parsedIp, port);
             udpClient.Connect(serverEndPoint);
@@ -429,7 +430,7 @@ public sealed class SR2MPClient
             ushort sequenceNumber = 0;
 
             if (reliability.HasFlag(PacketReliability.Ordered))
-                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, packetType, serverEndPoint) ?? 0;
+                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, packetType, serverEndPoint, reliability) ?? 0;
 
             var splitResult = PacketChunkManager.SplitPacket(data, reliability, channel, sequenceNumber, serverEndPoint, out var packetId);
 

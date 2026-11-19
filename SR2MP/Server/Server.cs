@@ -161,9 +161,9 @@ public sealed class SR2MPServer
         }
     }
 
-    /// <summary>The host counts its packets to this endpoint from 1 again, for a player connecting anew.</summary>
-    internal void ForgetOutgoingSequences(IPEndPoint endPoint)
-        => NetworkManager.ForgetEndpoint(endPoint, outgoingOnly: true);
+    /// <summary>Packet counts and resends for this endpoint start again, for a player connecting anew.</summary>
+    internal void ForgetSequences(IPEndPoint endPoint)
+        => NetworkManager.ForgetEndpoint(endPoint);
 
     private void OnClientRemoved(ClientInfo client)
     {

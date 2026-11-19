@@ -129,8 +129,10 @@ internal static class NetworkGardenManager
     /// A game joining a host keeps its scene: its gardens were made outside the session (no
     /// network part) or kept what it owned offline. All of them wait for the host's word.
     /// </summary>
-    private static void OnClientConnected()
+    internal static void ResetForNewConnection()
     {
+        ClearPending();
+
         KnownOwners.Clear();
         PendingOwnership.Clear();
         PendingFinalStates.Clear();
@@ -275,7 +277,8 @@ internal static class NetworkGardenManager
     static NetworkGardenManager()
     {
         Main.Server.OnServerStarted +=      ClearPending;
-        Main.Client.OnConnected     += _ => { ClearPending(); OnClientConnected(); };
+        // A joining game is reset when it starts connecting (ResetForNewConnection), before any of
+        // the host's packets: ConnectionApprove can arrive after the host's world packets.
         Main.Client.OnDisconnected  +=      ClearPending;
     }
 

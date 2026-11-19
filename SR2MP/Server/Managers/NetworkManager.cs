@@ -120,7 +120,7 @@ internal sealed class NetworkManager
             ushort sequenceNumber = 0;
 
             if (packetReliability.HasFlag(PacketReliability.Ordered))
-                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, data[0], endPoint) ?? 0;
+                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, data[0], endPoint, packetReliability) ?? 0;
 
             var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, endPoint, out var packetId);
 

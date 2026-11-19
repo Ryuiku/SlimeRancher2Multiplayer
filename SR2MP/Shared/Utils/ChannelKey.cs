@@ -13,25 +13,30 @@ internal readonly struct ChannelKey : IEquatable<ChannelKey>
     private readonly NetworkChannel Channel;
     private readonly byte PacketType;
 
-    public ChannelKey(IPEndPoint endPoint, NetworkChannel channel, byte packetType)
+    // Reliable and unreliable ordered packets of one type count separately: a lost unreliable one
+    // is never resent, and a reliable stream waiting for it would wait forever.
+    private readonly bool Reliable;
+
+    public ChannelKey(IPEndPoint endPoint, NetworkChannel channel, byte packetType, bool reliable)
     {
         EndPoint = endPoint;
         Channel = channel;
         PacketType = packetType;
+        Reliable = reliable;
     }
 
     public bool Equals(ChannelKey other)
-        => PacketType == other.PacketType && Channel == other.Channel && EndPoint.Equals(other.EndPoint);
+        => PacketType == other.PacketType && Channel == other.Channel && Reliable == other.Reliable && EndPoint.Equals(other.EndPoint);
 
     public override bool Equals(object? obj)
         => obj is ChannelKey other && Equals(other);
 
     public override int GetHashCode()
-        => HashCode.Combine(EndPoint, Channel, PacketType);
+        => HashCode.Combine(EndPoint, Channel, PacketType, Reliable);
 
     internal bool IsFor(IPEndPoint endPoint)
         => EndPoint.Equals(endPoint);
 
     public override string ToString()
-        => $"{EndPoint}:{Channel}:{PacketType}";
+        => $"{EndPoint}:{Channel}:{PacketType}{(Reliable ? ":R" : "")}";
 }

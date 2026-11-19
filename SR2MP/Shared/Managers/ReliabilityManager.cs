@@ -256,9 +256,10 @@ internal sealed class ReliabilityManager
     /// Returns the next sequence number for a given packet type / channel / destination.
     /// Sequence numbers wrap from <see cref="ushort.MaxValue"/> back to 1.
     /// </summary>
-    public ushort GetNextSequenceNumber(NetworkChannel channel, byte packetType, IPEndPoint destination)
+    public ushort GetNextSequenceNumber(NetworkChannel channel, byte packetType, IPEndPoint destination,
+        PacketReliability reliability)
     {
-        var key = new ChannelKey(destination, channel, packetType);
+        var key = new ChannelKey(destination, channel, packetType, reliability.HasFlag(PacketReliability.Reliable));
         var seq = sequenceNumbersByChannel.AddOrUpdate(
             key,
             1,
@@ -270,7 +271,7 @@ internal sealed class ReliabilityManager
     public bool ShouldProcessOrderedPacket(IPEndPoint sender, ushort sequenceNumber, byte packetType,
         NetworkChannel channel, PacketReliability reliability, Action? processAction = null)
     {
-        var key     = new ChannelKey(sender, channel, packetType);
+        var key     = new ChannelKey(sender, channel, packetType, reliability.HasFlag(PacketReliability.Reliable));
         var lockObj = reorderLocks.GetOrAdd(key, _ => new object());
 
         lock (lockObj)
@@ -347,7 +348,11 @@ internal sealed class ReliabilityManager
 
         while (buffer.Count > 0)
         {
-            var next = NextSequence(lastProcessedSequence[key]);
+            // Gone when the endpoint was forgotten meanwhile.
+            if (!lastProcessedSequence.TryGetValue(key, out var last))
+                break;
+
+            var next = NextSequence(last);
             if (!buffer.TryGetValue(next, out var bufferedAction))
                 break;
 
@@ -569,6 +574,16 @@ internal sealed class ReliabilityManager
 
         if (outgoingOnly)
             return;
+
+        // Packets still being resent to the old connection would land in the new one's streams.
+        lock (laneLock)
+            lanes.Remove(endPoint);
+
+        foreach (var entry in pendingPackets)
+        {
+            if (entry.Value.Destination.Equals(endPoint) && pendingPackets.TryRemove(entry))
+                entry.Value.Finish();
+        }
 
         foreach (var key in lastProcessedSequence.Keys)
             if (key.IsFor(endPoint))
