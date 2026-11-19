@@ -11,7 +11,8 @@ internal static class NetworkGardenManager
     
     private static readonly Dictionary<string, string> KnownOwners = new();
 
-    private static readonly HashSet<string> PendingClaims = new();
+    // Claims (our id) and releases (empty) to send, by garden; the latest change wins.
+    private static readonly Dictionary<string, string> PendingOwnership = new();
     private static readonly Dictionary<string, GardenUpdatePacket.Entry> PendingFinalStates = new();
 
     private static int lastTickFrame = -1;
@@ -23,7 +24,7 @@ internal static class NetworkGardenManager
     internal static void OnServerStarted()
     {
         KnownOwners.Clear();
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
         PendingFinalStates.Clear();
 
         foreach (var spawnResource in Object.FindObjectsOfType<SpawnResource>(true))
@@ -48,7 +49,7 @@ internal static class NetworkGardenManager
     internal static void OnDisconnected()
     {
         KnownOwners.Clear();
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
         PendingFinalStates.Clear();
 
         foreach (var garden in Gardens.Values)
@@ -81,7 +82,12 @@ internal static class NetworkGardenManager
     }
 
     internal static void QueueClaim(string gardenId)
-        => PendingClaims.Add(gardenId);
+    {
+        PendingOwnership[gardenId] = LocalID;
+
+        if (Main.Server.IsRunning)
+            KnownOwners[gardenId] = LocalID;
+    }
 
     internal static void QueueFinalState(NetworkGarden garden)
     {
@@ -117,12 +123,50 @@ internal static class NetworkGardenManager
         if (Main.Server.IsRunning)
             KnownOwners[gardenId] = string.Empty;
 
-        SrLogger.LogGarden($"Broadcasting garden release: id='{gardenId}'");
+        SrLogger.LogGarden($"Queueing garden release: id='{gardenId}'");
 
-        Main.SendToAllOrServer(new GardenOwnershipPacket
+        // Sent with the claims, once a second: a player walking away from an area releases every
+        // spawner in it at once.
+        PendingOwnership[gardenId] = string.Empty;
+    }
+
+    /// <summary>
+    /// Host: who owns a garden is the host's to say. Claims and releases from players are applied
+    /// here and the result is sent to everyone, the sender included, so every game agrees on the
+    /// last claim the host took. Passing each claim on as it came left two players who claimed at
+    /// once each handing the garden to the other, so nobody grew it.
+    /// </summary>
+    internal static List<GardenOwnershipPacket.Entry> Arbitrate(List<GardenOwnershipPacket.Entry> entries, string? senderId)
+    {
+        var verdicts = new List<GardenOwnershipPacket.Entry>(entries.Count);
+
+        foreach (var entry in entries)
         {
-            Entries = new List<GardenOwnershipPacket.Entry> { new() { GardenId = gardenId, OwnerId = string.Empty } }
-        });
+            if (string.IsNullOrEmpty(entry.GardenId))
+                continue;
+
+            KnownOwners.TryGetValue(entry.GardenId, out var current);
+            current ??= string.Empty;
+
+            if (string.IsNullOrEmpty(entry.OwnerId))
+            {
+                // A release only counts from the owner: one sent before someone else's claim
+                // reached the host must not take the garden from them.
+                if (!string.IsNullOrEmpty(current) && senderId != null && current != senderId)
+                    SrLogger.LogGarden($"Garden '{entry.GardenId}': stale release from '{senderId}' ignored (owner '{current}')");
+                else
+                    ApplyOwnership(entry.GardenId, string.Empty);
+            }
+            else
+            {
+                ApplyOwnership(entry.GardenId, string.IsNullOrEmpty(senderId) ? entry.OwnerId : senderId!);
+            }
+
+            KnownOwners.TryGetValue(entry.GardenId, out var verdict);
+            verdicts.Add(new GardenOwnershipPacket.Entry { GardenId = entry.GardenId, OwnerId = verdict ?? string.Empty });
+        }
+
+        return verdicts;
     }
 
     internal static void ApplyState(GardenUpdatePacket.Entry entry)
@@ -160,6 +204,7 @@ internal static class NetworkGardenManager
     {
         PendingStates.Clear();
         HostSpawnersNotHere.Clear();
+        SR2MP.Handlers.LandPlots.ResourceAttachHandler.ClearPending();
     }
 
     internal static bool TakePendingState(string gardenId, out GardenUpdatePacket.Entry entry)
@@ -404,6 +449,8 @@ internal static class NetworkGardenManager
 
         var now = Time.time;
 
+        SR2MP.Handlers.LandPlots.ResourceAttachHandler.RetryPending();
+
         if (now >= nextClaimFlush)
         {
             nextClaimFlush = now + ClaimFlushInterval;
@@ -419,7 +466,7 @@ internal static class NetworkGardenManager
 
     private static void FlushClaims()
     {
-        if (PendingClaims.Count == 0)
+        if (PendingOwnership.Count == 0)
             return;
 
         // A joining player's packets are held back until the host's world is applied. The claims
@@ -427,17 +474,25 @@ internal static class NetworkGardenManager
         if (!Main.Server.IsRunning && Main.Client.IsConnected && !NetworkActorManager.InitialActorsLoaded)
             return;
 
-        var entries = new List<GardenOwnershipPacket.Entry>(PendingClaims.Count);
-        foreach (var id in PendingClaims)
+        var entries = new List<GardenOwnershipPacket.Entry>(PendingOwnership.Count);
+        foreach (var (id, owner) in PendingOwnership)
         {
-            entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = LocalID });
+            // A claim or release another player's claim has overtaken since: sending it would
+            // take the garden back from them.
+            if (Gardens.TryGetValue(id, out var garden) && garden && !garden.OwnedHere)
+                continue;
+
+            entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = owner });
 
             if (Main.Server.IsRunning)
-                KnownOwners[id] = LocalID;
+                KnownOwners[id] = owner;
         }
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
 
-        SrLogger.LogGarden($"Broadcasting {entries.Count} garden claim(s)");
+        if (entries.Count == 0)
+            return;
+
+        SrLogger.LogGarden($"Broadcasting {entries.Count} garden ownership change(s)");
         Main.SendToAllOrServer(new GardenOwnershipPacket { Entries = entries });
     }
 

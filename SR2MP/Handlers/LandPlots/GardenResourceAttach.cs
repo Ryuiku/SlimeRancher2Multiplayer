@@ -9,16 +9,67 @@ namespace SR2MP.Handlers.LandPlots;
 [PacketHandler((byte)PacketType.ResourceAttach)]
 internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPacket>
 {
+    // Produce the game has just grown: the owner's game attaches it in the same frame it makes
+    // it, but sends the new actor a frame later and on another channel, so the attach almost
+    // always came first and was dropped. It waits here for its actor for a while.
+    private const float PendingFor = 4f;
+    private const float RetryInterval = 0.25f;
+    private static readonly List<(ResourceAttachPacket Packet, float Since)> Pending = new();
+    private static float nextRetry;
+
     protected override bool Handle(ResourceAttachPacket packet, IPEndPoint? _)
     {
         // "Not loaded on this machine" still returns true: the host passes it on to players who have it.
+        if (!TryApply(packet))
+        {
+            Pending.RemoveAll(p => p.Packet.ActorId.Value == packet.ActorId.Value);
+            Pending.Add((packet, UnityEngine.Time.time));
+        }
+
+        return true;
+    }
+
+    internal static void RetryPending()
+    {
+        if (Pending.Count == 0)
+            return;
+
+        var now = UnityEngine.Time.time;
+        if (now < nextRetry)
+            return;
+        nextRetry = now + RetryInterval;
+
+        for (var i = Pending.Count - 1; i >= 0; i--)
+        {
+            var (packet, since) = Pending[i];
+            bool done;
+            try
+            {
+                done = TryApply(packet) || now - since > PendingFor;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Produce attach for actor {packet.ActorId.Value} failed: {ex.Message}");
+                done = true;
+            }
+
+            if (done)
+                Pending.RemoveAt(i);
+        }
+    }
+
+    internal static void ClearPending() => Pending.Clear();
+
+    /// <returns>False while the actor is not here yet.</returns>
+    private static bool TryApply(ResourceAttachPacket packet)
+    {
         if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model))
-            return true;
+            return false;
 
         var actor = model.TryCast<ActorModel>();
 
         if (actor == null || !actor.TryGetNetworkComponent(out var networkComponent))
-            return true;
+            return false;
 
         var cycle = networkComponent.GetComponent<ResourceCycle>();
         if (cycle == null)
@@ -68,8 +119,14 @@ internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPa
             return true;
 
         HandlingPacket = true;
-        cycle.Attach(targetJoint);
-        HandlingPacket = false;
+        try
+        {
+            cycle.Attach(targetJoint);
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
         
         resolvedSpawner._spawned.Add(cycle.gameObject);
 

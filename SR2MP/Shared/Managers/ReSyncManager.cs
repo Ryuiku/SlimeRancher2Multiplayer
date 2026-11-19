@@ -830,6 +830,29 @@ internal sealed class ReSyncManager
     private static void SendPlotsPacket(IPEndPoint client)
         => Main.Server.SendToClient(CreatePlotsPacket(), client);
 
+    private static InitialLandPlotsPacket.GardenData GardenData(LandPlotModel plot)
+    {
+        var data = new InitialLandPlotsPacket.GardenData
+        {
+            Crop = plot.resourceGrowerDefinition == null
+                ? NetworkGardenPlanting.ClearCrop
+                : NetworkActorManager.GetPersistentID(plot.resourceGrowerDefinition._primaryResourceType!)
+        };
+
+        // Unity's own null check: after the ranch unloads, gameObj is a destroyed object that is
+        // not null to C#, and reading it threw and lost every plot for the joining player.
+        var spawner = plot.gameObj ? plot.gameObj.GetComponentInChildren<SpawnResource>() : null;
+        var growth = spawner ? spawner!._model : null;
+        if (growth != null)
+        {
+            data.NextSpawnTime = growth.nextSpawnTime;
+            data.StoredWater = growth.storedWater;
+            data.NextSpawnRipens = growth.nextSpawnRipens;
+        }
+
+        return data;
+    }
+
     private static InitialLandPlotsPacket CreatePlotsPacket()
     {
         var landPlotsList = new List<InitialLandPlotsPacket.BasePlot>();
@@ -838,15 +861,7 @@ internal sealed class ReSyncManager
         {
             INetObject? data = plot.typeId switch
             {
-                LandPlot.Id.GARDEN => new InitialLandPlotsPacket.GardenData
-                {
-                    Crop = plot.resourceGrowerDefinition == null
-                        ? 9
-                        : NetworkActorManager.GetPersistentID(plot.resourceGrowerDefinition._primaryResourceType!),
-                    NextSpawnTime = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.nextSpawnTime ?? 0,
-                    StoredWater = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.storedWater ?? 0,
-                    NextSpawnRipens = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.nextSpawnRipens ?? false,
-                },
+                LandPlot.Id.GARDEN => GardenData(plot),
                 LandPlot.Id.POND => new InitialLandPlotsPacket.CoopPondData
                 {
                     CollectorAmmo = SerializeAmmo(plot.siloAmmo, PlortCollectorAmmo)

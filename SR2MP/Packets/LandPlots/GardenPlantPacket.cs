@@ -8,7 +8,7 @@ internal sealed class GardenPlantPacket : IPacket
     public int ActorType;
 
     public PacketType Type => PacketType.GardenPlant;
-    public PacketReliability Reliability => PacketReliability.Reliable;
+    public PacketReliability Reliability => PacketReliability.ReliableOrdered;
     public NetworkChannel Channel => NetworkChannel.Landplots;
 
     public void Serialise(PacketWriter writer)

@@ -1,5 +1,6 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using SR2MP.Packets.LandPlots;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Patches.LandPlots;
 
@@ -15,10 +16,14 @@ internal static class OnDestroyCrop
         if (!__instance)
             return;
 
+        var location = __instance.GetComponentInParent<LandPlotLocation>();
+        if (!location || string.IsNullOrEmpty(location!._id))
+            return;
+
         var packet = new GardenPlantPacket
         {
-            ID = __instance.GetComponentInParent<LandPlotLocation>()._id,
-            ActorType = 9
+            ID = location._id,
+            ActorType = NetworkGardenPlanting.ClearCrop
         };
 
         Main.SendToAllOrServer(packet);

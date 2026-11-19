@@ -49,54 +49,43 @@ internal sealed class InitialLandPlotsHandler : BasePacketHandler<InitialLandPlo
 
             switch (plot.Data)
             {
-                case InitialLandPlotsPacket.GardenData { Crop: 9 }:
+                case InitialLandPlotsPacket.GardenData { Crop: NetworkGardenPlanting.ClearCrop }:
                 {
-                    model.resourceGrowerDefinition = null;
-                    if (!model.gameObj)
-                        continue;
-                    var gardenPlot = model.gameObj.GetComponentInChildren<LandPlot>(true);
-                    HandlingPacket = true;
-                    gardenPlot.DestroyAttached();
-                    HandlingPacket = false;
+                    NetworkGardenPlanting.Clear(model, plot.ID);
                     break;
                 }
 
                 case InitialLandPlotsPacket.GardenData garden:
                 {
-                    var actor = ActorManager.ActorTypes[garden.Crop];
-                    model.resourceGrowerDefinition =
-                        GameContext.Instance.AutoSaveDirector._saveReferenceTranslation._resourceGrowerTranslation
-                            .RawLookupDictionary._entries.FirstOrDefault(x =>
-                                x.value._primaryResourceType == actor)!.value;
+                    if (!ActorManager.ActorTypes.TryGetValue(garden.Crop, out var actor) || actor == null)
+                    {
+                        SrLogger.LogWarning($"Garden {plot.ID}: unknown crop type {garden.Crop} from the host");
+                        break;
+                    }
+
+                    // Plants the host's crop, replacing a different one this save had there, with the
+                    // right deluxe or normal crop for the plot.
+                    var plantedObject = NetworkGardenPlanting.Plant(model, actor, plot.ID);
+
+                    if (plantedObject != null)
+                    {
+                        var spawnResource = plantedObject.GetComponent<SpawnResource>();
+                        if (spawnResource != null && spawnResource._model != null)
+                        {
+                            foreach (var joint in spawnResource.SpawnJoints)
+                            {
+                                if (joint == null || joint.connectedBody == null)
+                                    continue;
+
+                                var connectedObj = joint.connectedBody.gameObject;
+                                Destroyer.Destroy(connectedObj, "InitialLandPlotsHandler.OnDestroy");
+                            }
+                        }
+                    }
 
                     if (!model.gameObj)
                         continue;
 
-                    var gardenCatcher = model.gameObj.GetComponentInChildren<GardenCatcher>();
-
-                    HandlingPacket = true;
-                    if (gardenCatcher.CanAccept(actor))
-                    {
-                        var plantedObject = gardenCatcher.Plant(actor, true);
-
-                        if (plantedObject != null)
-                        {
-                            var spawnResource = plantedObject.GetComponent<SpawnResource>();
-                            if (spawnResource != null && spawnResource._model != null)
-                            {
-                                foreach (var joint in spawnResource.SpawnJoints)
-                                {
-                                    if (joint == null || joint.connectedBody == null)
-                                        continue;
-
-                                    var connectedObj = joint.connectedBody.gameObject;
-                                    Destroyer.Destroy(connectedObj, "InitialLandPlotsHandler.OnDestroy");
-                                }
-                            }
-                        }
-                    }
-                    HandlingPacket = false;
-                    
                     // No time means the host has this garden unloaded and sent nothing: zeros would
                     // make the crop ripe at once. Its saved growth comes with the resource spawners.
                     var existingNetworkGarden = model.gameObj.GetComponentInChildren<NetworkGarden>(true);
