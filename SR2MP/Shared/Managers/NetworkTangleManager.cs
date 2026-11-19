@@ -19,6 +19,8 @@ internal static class NetworkTangleManager
         public long Id;
         public bool OutSent;
         public VineBulbWithStalk? Stalk;
+        // Game time when the stalk started here, so a repeat tells only the seed time left.
+        public float StartedAt;
         // The stalk's bud once it grew, so a bud that is gone (picked while asleep here) is noticed.
         public GameObject? Bud;
     }
@@ -32,11 +34,21 @@ internal static class NetworkTangleManager
         // the copy's own grow-in would play over the withering.
         public float GrownAt;
         public bool Withering;
+        // When it began withering: the game removes it after the wither, but if the game ignored
+        // the wither (still growing in), it is removed after a while anyway.
+        public float WitherStartedAt;
     }
 
     // How often the grower repeats each standing stalk, and when a copy that heard nothing goes.
     private const float StalkResendSeconds = 6f;
     private const float StalkExpireSeconds = 20f;
+
+    // A stalk's grow-in (and wither) animation: the game waits this long before it accepts the
+    // next one, and ignores a wither asked for meanwhile.
+    private const float StalkAnimationSeconds = 4.5f;
+
+    // A copy still there this long after it began withering is removed.
+    private const float WitherTimeoutSeconds = 10f;
 
     // A copied grab vine is removed after this long even if the owner's "gone" never arrives.
     private const float RemoteVineLifetime = 15f;
@@ -110,7 +122,7 @@ internal static class NetworkTangleManager
         if (LocalStalks.ContainsKey(pointer))
             return null;
 
-        var local = new LocalStalk { Id = NextId(), Stalk = stalk };
+        var local = new LocalStalk { Id = NextId(), Stalk = stalk, StartedAt = UnityEngine.Time.time };
         LocalStalks[pointer] = local;
 
         var bud = stalk._budObj;
@@ -131,6 +143,9 @@ internal static class NetworkTangleManager
 
         var transform = stalk!.transform;
         var sceneGroup = stalk._sceneGroup;
+        var seedLeft = stalk._shouldSpawnSeed && !stalk._budObj
+            ? stalk._seedDuration - (UnityEngine.Time.time - local.StartedAt)
+            : 0f;
 
         // The bud is announced as hanging only while it is still ours: once someone picked it,
         // the others must be free to take it over.
@@ -151,9 +166,10 @@ internal static class NetworkTangleManager
             SceneGroup = sceneGroup ? sceneGroup.name : CurrentSceneGroupName(),
             Position = transform.position,
             Rotation = transform.rotation,
-            // A stalk that already has its bud is shown grown, with no seed phase first.
-            ShouldSpawnSeed = stalk._shouldSpawnSeed && !bud,
-            SeedDuration = stalk._seedDuration,
+            // A stalk that already has its bud, or is past its seed, is shown grown with no seed
+            // phase first; one still seeding sends only the seed time left.
+            ShouldSpawnSeed = seedLeft > 0f,
+            SeedDuration = seedLeft,
             IsBigSeed = stalk._isBigSeed,
             BudActorId = budActorId
         });
@@ -388,7 +404,9 @@ internal static class NetworkTangleManager
         List<long>? expired = null;
         foreach (var remote in RemoteStalks.Values)
         {
-            if (!remote.Stalk || (!remote.Withering && now - remote.LastHeard > StalkExpireSeconds))
+            if (!remote.Stalk ||
+                (!remote.Withering && now - remote.LastHeard > StalkExpireSeconds) ||
+                (remote.Withering && now - remote.WitherStartedAt > WitherTimeoutSeconds))
                 (expired ??= new List<long>()).Add(remote.Id);
         }
 
@@ -430,13 +448,22 @@ internal static class NetworkTangleManager
                 if (!RemoteStalks.TryGetValue(packet.StalkId, out var withering))
                     break;
 
-                if (!withering.Stalk || UnityEngine.Time.unscaledTime < withering.GrownAt)
+                // While the copy still grows in, the game would ignore the wither and leave it.
+                var growing = UnityEngine.Time.unscaledTime < withering.GrownAt;
+                if (withering.Stalk)
+                {
+                    var animator = withering.Stalk!._vineBulbAnimator;
+                    growing |= animator && animator!._animating;
+                }
+
+                if (!withering.Stalk || growing)
                 {
                     RemoveRemoteStalk(packet.StalkId);
                     break;
                 }
 
                 withering.Withering = true;
+                withering.WitherStartedAt = UnityEngine.Time.unscaledTime;
                 withering.Stalk!.TriggerAnimatorOut(packet.Silent);
                 break;
 
@@ -504,13 +531,14 @@ internal static class NetworkTangleManager
 
         // Marked before the stalk's Start runs (next frame), so it is never announced as ours and
         // never grows a bud: the grower's bud reaches this game as a shared actor.
+        var seedDuration = packet.ShouldSpawnSeed ? Mathf.Max(0.05f, packet.SeedDuration) : 0.05f;
         var now = UnityEngine.Time.unscaledTime;
         var remote = new RemoteStalk
         {
             Id = packet.StalkId,
             Stalk = stalk,
             LastHeard = now,
-            GrownAt = now + (packet.ShouldSpawnSeed ? Mathf.Max(0f, packet.SeedDuration) : 0f) + 2f
+            GrownAt = now + seedDuration + StalkAnimationSeconds + 0.5f
         };
         RemoteStalkIds[stalk.Pointer] = packet.StalkId;
         RemoteStalks[packet.StalkId] = remote;
@@ -519,8 +547,16 @@ internal static class NetworkTangleManager
         var sceneGroup = regionRegistry ? regionRegistry!.CurrentSceneGroup : null;
         // Always through the seed phase, briefly for a stalk shown grown: a stalk that animates in
         // from its own Start can do so before its animator's Start, which then hides the plant.
-        var seedDuration = packet.ShouldSpawnSeed ? packet.SeedDuration : 0.05f;
         stalk.Init(sceneGroup!, true, seedDuration, packet.IsBigSeed);
+
+        // A stalk whose bud already hangs: the real bud is the shared actor, so the stalk's
+        // stand-in bud (shown while it grows in) would be a second bud beside it.
+        if (packet.BudActorId != 0 || !packet.ShouldSpawnSeed)
+        {
+            var dummy = stalk._dummyBudObject;
+            if (dummy)
+                dummy!.SetActive(false);
+        }
     }
 
     private static void NoteBud(long stalkId, long budActorId)

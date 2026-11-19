@@ -519,6 +519,7 @@ internal partial class NetworkPlayer
             .Distinct());
 
         StripToFX(copy);
+        EnableVacKeywordsOnCopy(copy, source);
 
         // The avatar's copy is often off to the side of this camera's view or starts folded up
         // small, and an Animator set to cull would then never run the swirl, so it never shows.
@@ -572,6 +573,129 @@ internal partial class NetworkPlayer
             $"{vacFxAnimators.Length} animators, scale {sourceTransform.lossyScale}; " +
             $"source had: {componentNames}");
         return true;
+    }
+
+    // The cone's shader only draws while a global shader keyword is on, and the game turns that
+    // keyword on only while this player's own vac runs (WorldParticleVacInteraction sets a scripted
+    // bool, a ShaderGlobalKeywordController turns it into the keyword). So another player's cone
+    // only showed while this player was vaccing too. The copy gets its own materials with the
+    // keyword on: a keyword on the material counts even while the global one is off.
+    private static List<string>? vacKeywords;
+
+    private static List<string> VacKeywords(GameObject source)
+    {
+        if (vacKeywords is { Count: > 0 })
+            return vacKeywords;
+
+        var found = new List<string>();
+        var log = new List<string>();
+        try
+        {
+            var interaction = source.GetComponentInChildren<Il2CppMonomiPark.SlimeRancher.VFXGraphParticles.WorldParticleVacInteraction>(true);
+            var vacBool = interaction ? interaction!.vacActiveScriptedBool : null;
+            log.Add($"vac bool '{(vacBool ? vacBool!.name : "none")}'");
+
+            foreach (var controller in Resources.FindObjectsOfTypeAll<Il2CppMonomiPark.SlimeRancher.Rendering.ShaderGlobalKeywordController>())
+            {
+                if (!controller)
+                    continue;
+
+                var keyword = controller._keyword;
+                var target = controller.targetValue;
+                var drivenByVac = vacBool && target && target!.Pointer == vacBool!.Pointer;
+                log.Add($"'{keyword}' from '{(target ? target!.name : "none")}'{(drivenByVac ? " (the vac's)" : "")} on={(!string.IsNullOrEmpty(keyword) && Shader.IsKeywordEnabled(keyword))}");
+
+                if (drivenByVac && !string.IsNullOrEmpty(keyword) && !found.Contains(keyword))
+                    found.Add(keyword);
+            }
+
+            // No controller tied to the vac's bool was found: take keywords that name the vac.
+            if (found.Count == 0)
+            {
+                foreach (var controller in Resources.FindObjectsOfTypeAll<Il2CppMonomiPark.SlimeRancher.Rendering.ShaderGlobalKeywordController>())
+                {
+                    var keyword = controller ? controller._keyword : null;
+                    if (!string.IsNullOrEmpty(keyword) && keyword!.Contains("VAC", StringComparison.OrdinalIgnoreCase) && !found.Contains(keyword))
+                        found.Add(keyword);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Add($"failed: {ex.Message}");
+        }
+
+        SrLogger.LogMessage($"Vac stream keywords: using [{string.Join(", ", found)}]; seen: {string.Join(" | ", log)}");
+        vacKeywords = found;
+        return found;
+    }
+
+    private static bool ShaderHasKeyword(Shader shader, string keyword)
+    {
+        try
+        {
+            var found = shader.keywordSpace.FindKeyword(keyword);
+            return found != null && found.isValid;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void EnableVacKeywordsOnCopy(GameObject copy, GameObject source)
+    {
+        try
+        {
+            var keywords = VacKeywords(source);
+            if (keywords.Count == 0)
+                return;
+
+            var done = new List<string>();
+            foreach (var renderer in copy.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!renderer)
+                    continue;
+
+                var shared = renderer.sharedMaterials;
+                if (shared == null || shared.Length == 0)
+                    continue;
+
+                var copies = new Material[shared.Length];
+                var changed = false;
+                for (var i = 0; i < shared.Length; i++)
+                {
+                    var material = shared[i];
+                    copies[i] = material;
+                    if (!material || !material.shader)
+                        continue;
+
+                    // keywordNames is not usable through the interop in this game; FindKeyword is.
+                    var shader = material.shader;
+                    var matching = keywords.Where(k => ShaderHasKeyword(shader, k)).ToList();
+                    if (matching.Count == 0)
+                        continue;
+
+                    // A material of our own, so the player's own vac keeps the game's.
+                    var own = new Material(material) { name = material.name + " (SR2MP remote)" };
+                    foreach (var keyword in matching)
+                        own.EnableKeyword(keyword);
+
+                    copies[i] = own;
+                    changed = true;
+                    done.Add($"'{renderer.name}': {string.Join(", ", matching)}");
+                }
+
+                if (changed)
+                    renderer.sharedMaterials = copies;
+            }
+
+            SrLogger.LogMessage($"Vac stream for avatar {ID}: keywords turned on for {(done.Count == 0 ? "no renderer (none of their shaders use them)" : string.Join(" | ", done))}");
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Vac stream for avatar {ID}: could not turn on the vac keywords: {ex.Message}");
+        }
     }
 
     // The avatar's vac model: the renderers its vac palette colours. The stream starts at the
@@ -777,8 +901,11 @@ internal partial class NetworkPlayer
                 }
             }
 
+            // Measured from the copy's own origin (where the stream starts) and turned about it, so
+            // the base stays where it is and only the direction changes.
             var anchor = vacFxAnchor!.transform;
-            var direction = cone ? Quaternion.Inverse(anchor.rotation) * (cone!.bounds.center - anchor.position) : Vector3.zero;
+            var copyTransform = vacFxCopy.transform;
+            var direction = cone ? Quaternion.Inverse(anchor.rotation) * (cone!.bounds.center - copyTransform.position) : Vector3.zero;
 
             // Not grown out yet (the vac only just started): look again shortly.
             if (direction.magnitude < 0.5f)
@@ -797,9 +924,7 @@ internal partial class NetworkPlayer
             }
 
             var turn = Quaternion.FromToRotation(direction.normalized, Vector3.forward);
-            var copyTransform = vacFxCopy.transform;
             copyTransform.localRotation = turn * copyTransform.localRotation;
-            copyTransform.localPosition = turn * copyTransform.localPosition;
             SrLogger.LogMessage($"Vac stream on avatar {ID} pointed {angle:0}° away from the aim (direction {direction.normalized}, look pitch {ReceivedLookY:0}°), turned to point along it (cone size {cone!.bounds.size}{ownCone})");
         }
         catch (Exception ex)
@@ -962,7 +1087,22 @@ internal partial class NetworkPlayer
     private void DestroyVacFX()
     {
         if (vacFxAnchor)
+        {
+            // The copy's own materials (made for the vac keywords) go with it.
+            foreach (var renderer in vacFxAnchor!.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!renderer)
+                    continue;
+
+                foreach (var material in renderer.sharedMaterials)
+                {
+                    if (material && material.name.EndsWith(" (SR2MP remote)", StringComparison.Ordinal))
+                        Destroy(material);
+                }
+            }
+
             Destroy(vacFxAnchor);
+        }
 
         vacFxAnchor = null;
         vacFxCopy = null;
