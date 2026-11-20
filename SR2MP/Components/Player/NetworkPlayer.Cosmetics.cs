@@ -469,7 +469,9 @@ internal partial class NetworkPlayer
             var anchor = vacFxAnchor!.transform;
             anchor.position = origin + (aim * NozzleDistance(origin, aim));
             anchor.rotation = rotation;
-            ApplyVacWind(anchor.position, aim, wanted || vacFxOn);
+            var windDistance = ApplyVacWind(anchor.position, aim, wanted || vacFxOn);
+            if (wanted)
+                PushGrass(anchor.position, aim, windDistance);
 
             if (wanted)
             {
@@ -563,6 +565,7 @@ internal partial class NetworkPlayer
         vacFxParticles = copy.GetComponentsInChildren<ParticleSystem>(true);
         vacFxAnimators = copy.GetComponentsInChildren<Animator>(true);
         vacFxRenderers = copy.GetComponentsInChildren<Renderer>(true);
+        SetupGrassPushers(copy, source);
         vacFxActiveParam = vacuumItem._animActiveId;
         vacFxVacModeParam = vacuumItem._animVacModeId;
         vacFxAnchor = anchorObject;
@@ -584,6 +587,7 @@ internal partial class NetworkPlayer
     // renderers get the other player's own values through a property block, which wins over the
     // globals.
     private static VacuumInteractionFX? localVacInteraction;
+    private static float nextLocalVacLookup;
     private MaterialPropertyBlock? vacFxBlock;
     private Renderer[]? vacFxRenderers;
     private bool vacFxWindLogged;
@@ -593,15 +597,21 @@ internal partial class NetworkPlayer
         if (localVacInteraction)
             return localVacInteraction;
 
+        // Not every frame while there is none (a scene still loading).
+        var now = UnityEngine.Time.unscaledTime;
+        if (now < nextLocalVacLookup)
+            return null;
+        nextLocalVacLookup = now + 2f;
+
         var all = Object.FindObjectsOfType<VacuumInteractionFX>();
         localVacInteraction = all != null && all.Length > 0 ? all[0] : null;
         return localVacInteraction;
     }
 
-    private void ApplyVacWind(Vector3 start, Vector3 aim, bool on)
+    private float ApplyVacWind(Vector3 start, Vector3 aim, bool on)
     {
         if (vacFxRenderers == null)
-            return;
+            return 0f;
 
         try
         {
@@ -640,11 +650,90 @@ internal partial class NetworkPlayer
                 vacFxWindLogged = true;
                 SrLogger.LogMessage($"Vac stream on avatar {ID}: own wind distance {distance:0.##} m (max {maxDistance:0.##}, back offset {backOffset:0.##}, game's vac found: {(bool)interaction}) on {vacFxRenderers.Length} renderers");
             }
+
+            // For the grass: how far past the nozzle the vac reaches (the distance above is from
+            // the point behind it).
+            return Mathf.Max(0f, distance - backOffset);
         }
         catch (Exception ex)
         {
             vacFxRenderers = null;
             SrLogger.LogWarning($"Vac stream on avatar {ID}: could not set its wind distance: {ex.Message}");
+            return 0f;
+        }
+    }
+
+    // The grass bends for a vac because of small pushers along the stream: while the vac runs, the
+    // game's VacuumInteractionFX calls each one within reach, and it sends ripples into the grass
+    // a few times a second. The copy keeps its pushers and they are called the same way here.
+    private EnvironmentInteractionVacuum[]? vacFxGrassPushers;
+    private bool vacFxGrassFailed;
+
+    private void SetupGrassPushers(GameObject copy, GameObject source)
+    {
+        vacFxGrassPushers = null;
+        if (vacFxGrassFailed)
+            return;
+
+        try
+        {
+            var pushers = copy.GetComponentsInChildren<EnvironmentInteractionVacuum>(true);
+            var fixedParents = 0;
+            foreach (var pusher in pushers)
+            {
+                if (!pusher)
+                    continue;
+
+                // A ripple's direction is from this transform to the pusher. One outside the stream
+                // (this player's own vac) is replaced by a point at the same place on the copy, so
+                // the other player's ripples point the same way theirs do.
+                var parent = pusher.parentTransform;
+                if (!parent)
+                {
+                    pusher.parentTransform = pusher.transform.parent;
+                }
+                else if (!parent!.IsChildOf(copy.transform))
+                {
+                    var helper = new GameObject("SR2MP_GrassPushFrom").transform;
+                    helper.SetParent(copy.transform, false);
+                    helper.localPosition = source.transform.InverseTransformPoint(parent.position);
+                    pusher.parentTransform = helper;
+                    fixedParents++;
+                }
+            }
+
+            vacFxGrassPushers = pushers.Length > 0 ? pushers : null;
+            SrLogger.LogMessage($"Vac stream for avatar {ID}: {pushers.Length} grass pushers{(fixedParents > 0 ? $" ({fixedParents} re-pointed at the copy)" : "")}");
+        }
+        catch (Exception ex)
+        {
+            vacFxGrassFailed = true;
+            SrLogger.LogWarning($"Vac stream for avatar {ID}: grass pushers not set up: {ex.Message}");
+        }
+    }
+
+    private void PushGrass(Vector3 start, Vector3 aim, float reach)
+    {
+        if (vacFxGrassPushers == null || reach <= 0f)
+            return;
+
+        try
+        {
+            foreach (var pusher in vacFxGrassPushers)
+            {
+                if (!pusher || !pusher.isActiveAndEnabled)
+                    continue;
+
+                // As the game does: only the pushers the vac reaches before hitting something.
+                if (Vector3.Dot(pusher.transform.position - start, aim) < reach)
+                    pusher.UpdateInteraction();
+            }
+        }
+        catch (Exception ex)
+        {
+            vacFxGrassFailed = true;
+            vacFxGrassPushers = null;
+            SrLogger.LogWarning($"Vac stream on avatar {ID}: grass pushing turned off: {ex.Message}");
         }
     }
 
@@ -1045,6 +1134,7 @@ internal partial class NetworkPlayer
         vacFxCopy = null;
         vacFxSource = null;
         vacFxRenderers = null;
+        vacFxGrassPushers = null;
         vacFxParticles = null;
         vacFxAnimators = null;
         vacFxActive = false;
@@ -1053,10 +1143,11 @@ internal partial class NetworkPlayer
 
     private static void StripToFX(GameObject root)
     {
-        // Scripts first: some of the other components may be required by one of them.
+        // Scripts first: some of the other components may be required by one of them. The grass
+        // pushers stay: they do nothing on their own (no Update), only when called.
         foreach (var behaviour in root.GetComponentsInChildren<MonoBehaviour>(true))
         {
-            if (behaviour)
+            if (behaviour && behaviour.TryCast<EnvironmentInteractionVacuum>() == null)
                 DestroyImmediate(behaviour);
         }
 
@@ -1071,7 +1162,8 @@ internal partial class NetworkPlayer
                 // particles. Neither touches anything in the world.
                 component.TryCast<Animator>() != null ||
                 component.TryCast<ParticleSystemForceField>() != null ||
-                component.TryCast<UnityEngine.VFX.VisualEffect>() != null)
+                component.TryCast<UnityEngine.VFX.VisualEffect>() != null ||
+                component.TryCast<EnvironmentInteractionVacuum>() != null)
                 continue;
 
             DestroyImmediate(component);
