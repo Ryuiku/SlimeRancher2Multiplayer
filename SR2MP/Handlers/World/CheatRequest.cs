@@ -23,10 +23,13 @@ internal sealed class CheatRequestHandler : BasePacketHandler<CheatRequestPacket
         switch (packet.Action)
         {
             case CheatRequestPacket.CheatAction.SetWeather:
-                result = NetworkCheats.SetWeatherByIds(packet.Zone, packet.StateId, packet.Hours);
+                result = NetworkCheats.SetWeatherByIds(packet.Zone, packet.StateId, packet.Hours, NetworkCheats.WeatherMode.Set);
+                break;
+            case CheatRequestPacket.CheatAction.AddWeather:
+                result = NetworkCheats.SetWeatherByIds(packet.Zone, packet.StateId, packet.Hours, NetworkCheats.WeatherMode.Add);
                 break;
             case CheatRequestPacket.CheatAction.ClearWeather:
-                result = NetworkCheats.SetWeatherByIds(packet.Zone, 0, packet.Hours);
+                result = NetworkCheats.SetWeatherByIds(packet.Zone, 0, packet.Hours, NetworkCheats.WeatherMode.Clear);
                 break;
             case CheatRequestPacket.CheatAction.Tornado:
                 result = NetworkCheats.SpawnTornadoAt(packet.Position, packet.Rotation);

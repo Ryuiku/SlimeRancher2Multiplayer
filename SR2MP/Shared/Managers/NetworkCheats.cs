@@ -124,9 +124,15 @@ internal static class NetworkCheats
     internal sealed class WeatherChoice
     {
         public string Label = string.Empty;
-
-        // Null for clear skies.
         public WeatherStateDefinition? State;
+    }
+
+    /// <summary>Set: only this weather. Add: this weather on top of what runs. Clear: no weather.</summary>
+    internal enum WeatherMode : byte
+    {
+        Set,
+        Add,
+        Clear,
     }
 
     private static string StateLabel(WeatherStateDefinition state)
@@ -175,10 +181,10 @@ internal static class NetworkCheats
         return null;
     }
 
-    /// <summary>Clear skies, then every weather the zone's own patterns can show.</summary>
+    /// <summary>Every weather the zone's own patterns can show (clear skies has its own button).</summary>
     internal static List<WeatherChoice> WeatherChoicesHere(out string zoneName)
     {
-        var choices = new List<WeatherChoice> { new() { Label = "Clear skies" } };
+        var choices = new List<WeatherChoice>();
         zoneName = string.Empty;
 
         var zone = CurrentWeatherZone(out var data);
@@ -192,45 +198,94 @@ internal static class NetworkCheats
 
         NetworkWeatherManager.CheckInitialized();
         var seen = new HashSet<IntPtr>();
-        var found = new List<WeatherChoice>();
         foreach (var state in NetworkWeatherManager.WeatherStates.Values)
         {
             if (!state || !seen.Add(state.Pointer))
                 continue;
 
-            var asState = state.Cast<IWeatherState>();
-            for (var i = 0; i < patterns.Count; i++)
-            {
-                var pattern = patterns[i];
-                if (pattern && pattern.ContainsState(asState))
-                {
-                    found.Add(new WeatherChoice { Label = StateLabel(state), State = state });
-                    break;
-                }
-            }
+            if (PatternFor(data, state.Cast<IWeatherState>()))
+                choices.Add(new WeatherChoice { Label = StateLabel(state), State = state });
         }
 
-        found.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
-        choices.AddRange(found);
+        choices.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
         return choices;
     }
 
-    /// <summary>Sets or clears the weather in the player's zone: the host does it, a client asks.</summary>
-    internal static string ApplyWeatherHere(WeatherChoice choice)
+    /// <summary>What runs in the player's zone now, e.g. "Thunder Medium + Wind Light". On a client
+    /// this is the host's forecast, as synced.</summary>
+    internal static string RunningWeatherHere()
+    {
+        var zone = CurrentWeatherZone(out var data);
+        var forecast = data?.Forecast;
+        if (!zone || forecast == null)
+            return "no weather zone";
+
+        var time = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+        var now = time ? time!.WorldTime() : 0d;
+        var names = new List<string>();
+        foreach (var entry in forecast)
+        {
+            if (entry == null || !entry.Started || entry.State == null)
+                continue;
+
+            if (entry.IsEndTimeKnown && entry.EndTime <= now)
+                continue;
+
+            var def = entry.State.TryCast<WeatherStateDefinition>();
+            if (def)
+            {
+                var label = StateLabel(def!);
+                if (!names.Contains(label))
+                    names.Add(label);
+            }
+        }
+
+        return names.Count == 0 ? "clear" : string.Join(" + ", names);
+    }
+
+    // The zone's own pattern that has this state (one pattern instance runs one state at a time).
+    private static WeatherPatternDefinition? PatternFor(WeatherRegistry.ZoneWeatherData data, IWeatherState state)
+    {
+        var patterns = data.Config ? data.Config.Patterns : null;
+        if (patterns == null)
+            return null;
+
+        for (var i = 0; i < patterns.Count; i++)
+        {
+            var candidate = patterns[i];
+            if (candidate && candidate.ContainsState(state))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>Sets, adds or clears weather in the player's zone. The host does it; a client asks.</summary>
+    internal static string ApplyWeatherHere(WeatherStateDefinition? state, WeatherMode mode)
     {
         var zone = CurrentWeatherZone(out _);
         if (!zone)
             return "no weather here";
 
+        if (mode == WeatherMode.Clear)
+            state = null;
+        else if (!state)
+            return "pick a weather first";
+
         if (IsClient)
         {
-            var stateId = choice.State ? NetworkWeatherManager.GetPersistentID(choice.State!) : 0;
-            if (choice.State && stateId == 0)
+            var stateId = state ? NetworkWeatherManager.GetPersistentID(state!) : 0;
+            if (state && stateId == 0)
                 return "unknown weather";
 
             Main.Client.SendPacket(new CheatRequestPacket
             {
-                Action = choice.State ? CheatRequestPacket.CheatAction.SetWeather : CheatRequestPacket.CheatAction.ClearWeather,
+                Action = mode switch
+                {
+                    WeatherMode.Add => CheatRequestPacket.CheatAction.AddWeather,
+                    WeatherMode.Clear => CheatRequestPacket.CheatAction.ClearWeather,
+                    _ => CheatRequestPacket.CheatAction.SetWeather,
+                },
                 Zone = zone!.name,
                 StateId = stateId,
                 Hours = WeatherHours,
@@ -238,11 +293,11 @@ internal static class NetworkCheats
             return "asked the host";
         }
 
-        return SetWeather(zone!, choice.State, WeatherHours);
+        return ChangeWeather(zone!, state, WeatherHours, mode);
     }
 
     /// <summary>Host: a client's request, by the names and ids the weather sync uses.</summary>
-    internal static string SetWeatherByIds(string zoneName, int stateId, float hours)
+    internal static string SetWeatherByIds(string zoneName, int stateId, float hours, WeatherMode mode)
     {
         var registry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
         if (!registry || registry!._zones == null)
@@ -262,23 +317,32 @@ internal static class NetworkCheats
             return $"no weather zone '{zoneName}'";
 
         WeatherStateDefinition? state = null;
-        if (stateId != 0)
+
+        // Older clients and "set nothing" mean clear skies.
+        if (mode != WeatherMode.Clear && stateId == 0)
+            mode = WeatherMode.Clear;
+
+        if (mode != WeatherMode.Clear)
         {
             NetworkWeatherManager.CheckInitialized();
             if (!NetworkWeatherManager.WeatherStates.TryGetValue(stateId, out state) || !state)
                 return $"unknown weather {stateId}";
         }
 
-        return SetWeather(zone!, state, Mathf.Clamp(hours, 0.25f, 12f));
+        return ChangeWeather(zone!, state, Mathf.Clamp(hours, 0.25f, 12f), mode);
     }
 
     /// <summary>
-    /// Host or alone: makes the zone's forecast hold just this weather from now for the given
-    /// hours (or nothing, to clear it), the way the game's own forecast does. Running weather is
-    /// ended now and upcoming weather in that window dropped; the registry then stops and starts
-    /// the states on its next update, which the weather sync passes on.
+    /// Host or alone: changes the zone's forecast the way the game's own forecast does. Each pattern
+    /// (Rain, Thunder, Wind, ...) runs one state at a time and patterns run side by side, which is how
+    /// the game stacks weather.
+    /// Set ends everything running now, drops upcoming weather inside the window, and adds this weather.
+    /// Add touches only this weather's own pattern (and entries of the same state): it ends that
+    /// pattern's running state and adds this one, and other patterns keep running.
+    /// Clear is Set with nothing added.
+    /// The registry stops and starts the states on its next update, and the weather sync passes that on.
     /// </summary>
-    internal static string SetWeather(ZoneDefinition zone, WeatherStateDefinition? state, float hours)
+    internal static string ChangeWeather(ZoneDefinition zone, WeatherStateDefinition? state, float hours, WeatherMode mode)
     {
         var scene = SceneContext.Instance;
         var registry = scene ? scene.WeatherRegistry : null;
@@ -289,25 +353,17 @@ internal static class NetworkCheats
         if (!registry._zones.TryGetValue(zone, out var data) || data == null)
             return "no weather here";
 
+        if (mode == WeatherMode.Clear)
+            state = null;
+        else if (!state)
+            return "pick a weather first";
+
         WeatherPatternDefinition? pattern = null;
         IWeatherState? asState = null;
         if (state)
         {
             asState = state!.Cast<IWeatherState>();
-            var patterns = data.Config ? data.Config.Patterns : null;
-            if (patterns != null)
-            {
-                for (var i = 0; i < patterns.Count; i++)
-                {
-                    var candidate = patterns[i];
-                    if (candidate && candidate.ContainsState(asState))
-                    {
-                        pattern = candidate;
-                        break;
-                    }
-                }
-            }
-
+            pattern = PatternFor(data, asState);
             if (!pattern)
                 return $"{zone.name} has no {StateLabel(state)}";
         }
@@ -329,11 +385,20 @@ internal static class NetworkCheats
                 continue;
             }
 
+            var samePattern = pattern && entry.Pattern && entry.Pattern.Pointer == pattern!.Pointer;
+
+            // The director runs a state once per start without checking for a copy, so the same state
+            // in another pattern has to end too, or it would run twice.
+            var sameState = asState != null && entry.State != null && entry.State.Pointer == asState.Pointer;
+
+            // Add leaves the other patterns' weather alone, running or upcoming, so it stacks.
+            if (mode == WeatherMode.Add && !samePattern && !sameState)
+                continue;
+
             if (entry.Started)
             {
                 // The same weather already running just goes on longer.
-                if (asState != null && pattern && entry.State != null && entry.Pattern
-                    && entry.State.Pointer == asState.Pointer && entry.Pattern.Pointer == pattern!.Pointer)
+                if (samePattern && sameState)
                 {
                     entry.EndTime = Math.Max(entry.IsEndTimeKnown ? entry.EndTime : end, end);
                     entry.IsEndTimeKnown = true;
@@ -341,7 +406,9 @@ internal static class NetworkCheats
                     continue;
                 }
 
-                // Ended on the registry's next update, which stops it.
+                // Ended on the registry's next update, which stops it. A pattern's running state must
+                // end now even in Add: one pattern instance holds one state, and an old entry ending
+                // later would exit and remove the instance under the new state.
                 entry.EndTime = now;
                 entry.IsEndTimeKnown = true;
             }
@@ -367,8 +434,9 @@ internal static class NetworkCheats
         // The registry skips a zone until its next change time.
         data.NextChangeAt = now;
 
-        // The stop and start each send the forecast, but a stop is sent before the registry takes
-        // the ended entry out, so send it again once it has.
+        // A start sends a correct forecast by itself, but a stop is sent before the registry takes the
+        // ended entry out. Clear has no start after its stops, and making a weather longer neither stops
+        // nor starts anything, so send the forecast again once the registry has updated.
         if (Main.Server.IsRunning)
         {
             Later(WeatherUpdateHelper.SendWeatherUpdate, 3);
@@ -376,11 +444,38 @@ internal static class NetworkCheats
         }
 
         var what = state ? $"{StateLabel(state!)} for {hours:0.#} h" : "clear skies";
-        SrLogger.LogMessage($"Cheat menu: weather in {zone.name} set to {what}");
-        return extended ? "made longer" : "done";
+        SrLogger.LogMessage($"Cheat menu: weather in {zone.name}: {mode} {what}{(extended ? " (made longer)" : string.Empty)}");
+        if (extended)
+            return "made longer";
+
+        return mode switch
+        {
+            WeatherMode.Add => "added",
+            WeatherMode.Clear => "cleared",
+            _ => "done",
+        };
     }
 
     // ---------------------------------------------------------------- tornado
+
+    // SlimenadoMoveSpiral (SR2 1.3.0) checks every 0.5 s, from _groundHeightAdjustUp above its base: a ray
+    // ahead along its last step and a ray down (adjustUp + adjustDown long), both on Default + Gadget
+    // (layer 27). Either failing fades it. So the cheat picks a spot and heading whose simulated path
+    // passes those same checks.
+    private const int TornadoGroundMask = 0x8000001;   // SlimenadoMoveSpiral.GROUND_RAY_MASK
+    private const float TornadoCheckPeriod = 0.5f;     // GROUND_CHECK_PERIOD
+    private const float TornadoInitialSpin = 90f;      // INIT_ROT (degrees per second)
+    private const float TornadoSpinDecay = 0.9f;       // _rot *= 0.9^dt
+    private const float TornadoVerticalSpeed = 5f;     // VERT_SPEED
+    private const float TornadoDefaultAdjust = 10f;    // SlimenadoMoveSpiral's own default for both adjust fields
+
+    // A spot is taken at once when its simulated tornado lasts this long, and refused below the minimum.
+    private const float TornadoTestSeconds = 20f;
+    private const float TornadoMinSeconds = 10f;
+
+    // A cheat tornado lasts at least this many game hours (a game hour is a real minute), even when the
+    // activity's own random lifetime is shorter.
+    private const float TornadoCheatMinHours = 1f;
 
     internal static string TornadoHere()
     {
@@ -395,10 +490,8 @@ internal static class NetworkCheats
             forward = Vector3.forward;
         forward.Normalize();
 
+        // The host finds the ground itself, from the tornado's own check height.
         var spot = position.Value + forward * 25f;
-        if (Physics.Raycast(spot + Vector3.up * 30f, Vector3.down, out var hit, 80f, ~0, QueryTriggerInteraction.Ignore))
-            spot = hit.point;
-
         var rotation = Quaternion.LookRotation(forward);
 
         if (IsClient)
@@ -415,21 +508,160 @@ internal static class NetworkCheats
         return SpawnTornadoAt(spot, rotation);
     }
 
-    /// <summary>Host or alone: the weather's own tornado spawn, which the tornado sync shares.</summary>
+    /// <summary>Host or alone: the weather's own tornado spawn, placed where the tornado's own ground
+    /// and obstacle checks let it live. The tornado sync shares it.</summary>
     internal static string SpawnTornadoAt(Vector3 position, Quaternion rotation)
     {
-        var activity = NetworkTornadoManager.LastActivity;
-        if (activity == null)
-        {
-            var all = Resources.FindObjectsOfTypeAll<SpawnTornadoActivity>();
-            activity = all != null && all.Length > 0 ? all[0] : null;
-        }
-
+        var activity = TornadoActivity();
         if (activity == null)
             return "no tornado found in the game";
 
-        var tornado = activity.Spawn(position, rotation);
-        return tornado ? "spawned" : "the game made no tornado";
+        if (!FindTornadoSpot(activity, position, rotation.eulerAngles.y, out var spot, out var yaw, out var speed, out var life))
+            return "no open ground for a tornado there";
+
+        // Read by OnTornadoSpawn.Postfix before it shares the tornado.
+        NetworkTornadoManager.NextSpeed = speed;
+        NetworkTornadoManager.NextMinLifetimeHours = TornadoCheatMinHours;
+        GameObject tornado;
+        try
+        {
+            tornado = activity.Spawn(spot, Quaternion.Euler(0f, yaw, 0f));
+        }
+        finally
+        {
+            NetworkTornadoManager.NextSpeed = -1f;
+            NetworkTornadoManager.NextMinLifetimeHours = 0f;
+        }
+
+        if (!tornado)
+            return "the game made no tornado";
+
+        SrLogger.LogMessage($"Cheat menu: tornado at {spot} (asked for {position}), heading {yaw * 2f % 360f:0} degrees, "
+                            + $"speed {speed:0.#}, path tested clear for {life:0.#} s");
+        return "spawned";
+    }
+
+    private static SpawnTornadoActivity? TornadoActivity()
+    {
+        var last = NetworkTornadoManager.LastActivity;
+        if (last != null && last.Prefab)
+            return last;
+
+        foreach (var candidate in Resources.FindObjectsOfTypeAll<SpawnTornadoActivity>())
+        {
+            if (candidate && candidate.Prefab)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static bool GroundBelow(Vector3 column, float checkHeight, out RaycastHit hit)
+    {
+        // First from the tornado's own check height, which stays under cave roofs, overhangs and tree
+        // tops; then from high up, for ground that rises ahead of the player.
+        var low = Mathf.Max(checkHeight, 4f);
+        return Physics.Raycast(column + Vector3.up * low, Vector3.down, out hit, low + 30f, TornadoGroundMask, QueryTriggerInteraction.Ignore)
+               || Physics.Raycast(column + Vector3.up * 40f, Vector3.down, out hit, 120f, TornadoGroundMask, QueryTriggerInteraction.Ignore);
+    }
+
+    /// <summary>Tries the requested spot, then rings around it, and several headings for each spot,
+    /// until the game's own mover would survive TornadoTestSeconds there.</summary>
+    private static bool FindTornadoSpot(SpawnTornadoActivity activity, Vector3 around, float lookYaw,
+        out Vector3 spot, out float yaw, out float speed, out float bestLife)
+    {
+        spot = around;
+        yaw = 0f;
+        bestLife = 0f;
+        speed = UnityEngine.Random.Range(Mathf.Min(activity.MinSpeed, activity.MaxSpeed),
+                                         Mathf.Max(activity.MinSpeed, activity.MaxSpeed));
+
+        var up = TornadoDefaultAdjust;
+        var down = TornadoDefaultAdjust;
+        var prefab = activity.Prefab;
+        var mover = prefab ? prefab.GetComponent<SlimenadoMoveSpiral>() : null;
+        if (mover)
+        {
+            up = mover!._groundHeightAdjustUp;
+            down = mover._groundHeightAdjustDown;
+        }
+
+        // The mover travels at twice its yaw (it translates its forward in its own space), so yaws over
+        // half a turn cover every heading; start with the one that heads away from the player.
+        var firstYaw = lookYaw * 0.5f;
+        for (var ring = 0; ring <= 3; ring++)
+        {
+            var count = ring == 0 ? 1 : 8;
+            for (var i = 0; i < count; i++)
+            {
+                var offset = Quaternion.Euler(0f, lookYaw + i * 360f / count, 0f) * Vector3.forward * (ring * 8f);
+                if (!GroundBelow(around + offset, up, out var ground))
+                    continue;   // nothing loaded here (for example the host has not loaded that area)
+
+                if (ground.normal.y < 0.5f)
+                    continue;   // cliff face
+
+                for (var k = 0; k < 6; k++)
+                {
+                    var tryYaw = firstYaw + k * 30f;
+                    var life = TornadoLife(ground.point, tryYaw, speed, up, down, TornadoTestSeconds);
+                    if (life > bestLife)
+                    {
+                        bestLife = life;
+                        spot = ground.point;
+                        yaw = tryYaw;
+                    }
+
+                    if (life >= TornadoTestSeconds)
+                        return true;
+                }
+            }
+        }
+
+        return bestLife >= TornadoMinSeconds;
+    }
+
+    /// <summary>Replays SlimenadoMoveSpiral.FixedUpdate's movement and checks from a spot, and returns
+    /// how many seconds the tornado would last before its own checks fade it.</summary>
+    private static float TornadoLife(Vector3 start, float yaw, float speed, float up, float down, float seconds)
+    {
+        var dt = Time.fixedDeltaTime > 0f ? Time.fixedDeltaTime : 0.02f;
+        var pos = start;
+        var targetY = start.y;
+        var spin = TornadoInitialSpin;
+        var prior = pos + Vector3.up * up;
+        var nextCheck = 0f;
+        var decay = Mathf.Pow(TornadoSpinDecay, dt);
+
+        for (var t = 0f; t < seconds; t += dt)
+        {
+            pos.y = pos.y < targetY
+                ? Mathf.Min(targetY, pos.y + TornadoVerticalSpeed * dt)
+                : Mathf.Max(targetY, pos.y - TornadoVerticalSpeed * dt);
+            var turn = Quaternion.Euler(0f, yaw, 0f);
+            pos += turn * (turn * Vector3.forward) * (speed * dt);   // Translate(forward) in its own space
+            yaw += spin * dt;
+            spin *= decay;
+
+            if (t < nextCheck)
+                continue;
+
+            nextCheck = t + TornadoCheckPeriod;
+
+            var from = pos + Vector3.up * up;
+            var step = from - prior;
+            prior = from;
+            var length = step.magnitude;
+            if (length > 0.001f && Physics.Raycast(from, step / length, length, TornadoGroundMask, QueryTriggerInteraction.Ignore))
+                return t;   // blocked
+
+            if (!Physics.Raycast(from, Vector3.down, out var hit, up + down, TornadoGroundMask, QueryTriggerInteraction.Ignore))
+                return t;   // no ground
+
+            targetY = hit.point.y;
+        }
+
+        return seconds;
     }
 
     // ---------------------------------------------------------------- tangle
@@ -499,9 +731,10 @@ internal static class NetworkCheats
     // ---------------------------------------------------------------- gardens
 
     /// <summary>
-    /// Ranch gardens and trees this game runs grow new produce now, and the produce already on
-    /// them ripens. Produce and growth reach the others through the garden sync. Gardens another
-    /// player runs are left to them.
+    /// Ranch gardens: unripe produce this game runs ripens now (per produce actor, whoever runs the
+    /// garden), and gardens this game runs fill every empty spot with ripe produce right away through
+    /// the game's own ripe spawn. New produce and ripeness reach the others through the actor spawn,
+    /// ResourceAttach and actor state sync.
     /// </summary>
     internal static string GrowRanchGardens(out int skipped)
     {
@@ -512,56 +745,166 @@ internal static class NetworkCheats
             return "not in a game";
 
         var now = time!.WorldTime();
-        var grown = 0;
+        int gardens = 0, spawned = 0, ripened = 0, othersProduce = 0, planting = 0, full = 0, asleep = 0;
 
         foreach (var spawner in Object.FindObjectsOfType<SpawnResource>())
         {
-            if (!spawner || !spawner.enabled || !spawner.GetComponentInParent<LandPlot>())
+            if (!spawner || !spawner.GetComponentInParent<LandPlot>())
                 continue;
 
+            var joints = spawner.SpawnJoints;
+            if (joints == null || joints.Length == 0)
+                continue;
+
+            // 1. Ripen the produce hanging on the plant, read from the joints (SpawnResource._spawned
+            //    does not list produce loaded from a save, and nothing at all when the grower has no
+            //    active-spawn cap). Gated per produce actor, not per garden: produce changes owner by
+            //    player proximity, so the garden's owner often does not run its fruit.
+            ripened += RipenAttachedProduce(spawner, ref othersProduce);
+
+            // 2. Spawning only on the game that runs the garden (the others have it switched off).
             if (InSession)
             {
                 var garden = spawner.GetComponent<NetworkGarden>();
-                if (garden && !garden!.OwnedHere)
+                if (!garden || !garden!.LocallyOwned)
                 {
-                    skipped++;
+                    if (garden && garden!.OwnedHere)
+                        asleep++;   // ours, but its area sleeps, so the game is not running it now
+                    else
+                        skipped++;
                     continue;
                 }
             }
 
             var model = spawner._model;
-            if (model == null)
+            if (model == null || !spawner.isActiveAndEnabled)
                 continue;
 
-            if (model.nextSpawnTime > now)
-                model.nextSpawnTime = now;
+            gardens++;
 
-            var spawned = spawner._spawned;
-            if (spawned != null)
+            // A plot still scaling in after planting holds a spawn blocker until the tween ends: let the
+            // game's own timer spawn its first batch ripe right after.
+            if (spawner._spawnBlockers > 0)
             {
-                for (var i = 0; i < spawned.Count; i++)
-                {
-                    var produce = spawned[i];
-                    var cycle = produce ? produce.GetComponent<ResourceCycle>() : null;
-                    if (!cycle || !OwnedHere(cycle!))
-                        continue;
-
-                    try
-                    {
-                        cycle!.ImmediatelyRipen(0f);
-                    }
-                    catch (Exception ex)
-                    {
-                        SrLogger.LogDebug($"Cheat menu: ripen failed: {ex.Message}");
-                    }
-                }
+                model.nextSpawnRipens = true;
+                if (model.nextSpawnTime > now)
+                    model.nextSpawnTime = now;
+                planting++;
+                continue;
             }
 
-            grown++;
+            // 3. Fill every empty joint with ripe produce now. Spawn(SpawnRequest) skips the hour window
+            //    and the timer; SpawnRipe makes it call ProgressResource(now) on each new fruit, so it is
+            //    ripe at once. One call spawns a random-sized batch, so repeat while it still fills joints.
+            var free = FreeGardenJoints(spawner);
+            if (free == 0)
+            {
+                full++;
+                continue;
+            }
+
+            for (var pass = 0; free > 0 && pass < joints.Length; pass++)
+            {
+                try
+                {
+                    spawner.Spawn(new SpawnResource.SpawnRequest { SpawnRipe = true });
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogDebug($"Cheat menu: garden spawn failed: {ex.Message}");
+                    break;
+                }
+
+                if (!spawner)
+                    break;   // the grower destroyed itself (lifetime spawn limit)
+
+                var after = FreeGardenJoints(spawner);
+                if (after >= free)
+                    break;   // the game will not spawn more here now (active-spawn cap)
+
+                spawned += free - after;
+                free = after;
+            }
         }
 
-        SrLogger.LogMessage($"Cheat menu: grew {grown} ranch gardens ({skipped} run by another player)");
-        return grown == 0 && skipped == 0 ? "no gardens loaded" : $"{grown} growing";
+        SrLogger.LogMessage($"Cheat menu: gardens {gardens} run here (+{skipped} by another player, {asleep} asleep): "
+                            + $"{spawned} new ripe produce, {ripened} ripened, {full} already full, "
+                            + $"{planting} still planting, {othersProduce} unripe produce run by another player");
+
+        if (gardens == 0 && ripened == 0)
+        {
+            if (skipped == 0 && asleep == 0)
+                return "no gardens loaded";
+
+            if (skipped == 0)
+                return $"{asleep} gardens asleep";
+
+            return othersProduce > 0
+                ? $"{skipped} gardens, {othersProduce} produce run by another player"
+                : $"{skipped} gardens run by another player";
+        }
+
+        var result = $"{spawned} new, {ripened} ripened";
+        if (full > 0 && spawned == 0 && ripened == 0)
+            result = "already full and ripe";
+        if (planting > 0)
+            result += $", {planting} planting";
+        if (skipped > 0 || othersProduce > 0)
+            result += $", {skipped + othersProduce} others'";
+        if (asleep > 0)
+            result += $", {asleep} asleep";
+        return result;
+    }
+
+    /// <summary>Unripe produce on the spawner's joints that this game runs ripens now.</summary>
+    private static int RipenAttachedProduce(SpawnResource spawner, ref int others)
+    {
+        var count = 0;
+        var joints = spawner.SpawnJoints;
+        for (var i = 0; i < joints.Length; i++)
+        {
+            var joint = joints[i];
+            var body = joint ? joint!.connectedBody : null;
+            var cycle = body ? body!.GetComponent<ResourceCycle>() : null;
+            if (!cycle || cycle!._model == null || cycle._model.state != ResourceCycle.State.UNRIPE)
+                continue;
+
+            // Non-owners freeze progressTime every frame; only the produce's owner can ripen it.
+            if (!OwnedHere(cycle))
+            {
+                others++;
+                continue;
+            }
+
+            try
+            {
+                // progressTime = now; the next ResourceCycle update runs Ripen() (full size, vacuumable)
+                // and the owner's actor state sync sends RIPE to the others.
+                cycle.ImmediatelyRipen(0f);
+                count++;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Cheat menu: ripen failed: {ex.Message}");
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>Joints with nothing attached: the same test SpawnResource.Spawn uses.</summary>
+    private static int FreeGardenJoints(SpawnResource spawner)
+    {
+        var free = 0;
+        var joints = spawner.SpawnJoints;
+        for (var i = 0; i < joints.Length; i++)
+        {
+            var joint = joints[i];
+            if (joint && !joint!.connectedBody)
+                free++;
+        }
+
+        return free;
     }
 
     // ---------------------------------------------------------------- slimes

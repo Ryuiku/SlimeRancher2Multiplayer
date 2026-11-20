@@ -21,7 +21,9 @@ internal sealed class TornadoSpawnHandler : BasePacketHandler<TornadoSpawnPacket
                 
                 try
                 {
-                    if (existing) Object.Destroy(existing);
+                    // Fade it out the way the game ends a tornado, as the host's copy does.
+                    if (existing)
+                        NetworkTornadoManager.FadeOut(existing);
                 }
                 catch (Exception ex)
                 {
@@ -31,9 +33,17 @@ internal sealed class TornadoSpawnHandler : BasePacketHandler<TornadoSpawnPacket
             return false;
         }
         
+        // A copy this client already has (a resync or the host's regular resend) is updated in place.
+        if (NetworkTornadoManager.TryUpdateExisting(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds))
+        {
+            NetworkTornadoManager.PendingTornados.Remove(packet.TornadoId);
+            return false;
+        }
+
         if (NetworkTornadoManager.PlayerInDistance(packet.Position))
         {
-            NetworkTornadoManager.SpawnTornado(packet.TornadoId, packet.Position, packet.Rotation);
+            NetworkTornadoManager.PendingTornados.Remove(packet.TornadoId);
+            NetworkTornadoManager.SpawnTornado(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds);
         }
         else
         {
@@ -41,6 +51,9 @@ internal sealed class TornadoSpawnHandler : BasePacketHandler<TornadoSpawnPacket
             {
                 Position = packet.Position,
                 Rotation = packet.Rotation,
+                Speed = packet.Speed,
+                Spin = packet.Spin,
+                FadeInWorldSeconds = packet.FadeInWorldSeconds,
                 ReceivedAt = UnityEngine.Time.unscaledTime
             };
         }

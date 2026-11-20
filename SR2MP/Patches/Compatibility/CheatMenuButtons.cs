@@ -1,4 +1,5 @@
 using HarmonyLib;
+using Il2CppMonomiPark.SlimeRancher.Weather;
 using Starlight.Buttons;
 using Starlight.Enums.Sounds;
 using Starlight.Menus;
@@ -29,7 +30,9 @@ internal static class CheatMenuButtons
 
     private static List<NetworkCheats.WeatherChoice> weatherChoices = new();
     private static string weatherChoiceZone = string.Empty;
-    private static string chosenWeather = "Clear skies";
+    private static string chosenWeather = string.Empty;
+
+    private static string ChosenLabel => string.IsNullOrEmpty(chosenWeather) ? "none" : chosenWeather;
 
     private static StarlightCheatMenu? Menu => MenuEUtil.GetMenu<StarlightCheatMenu>();
 
@@ -84,8 +87,11 @@ internal static class CheatMenuButtons
             Add(() => NetworkCheats.RestLabel(restUntil), () => NetworkCheats.Rest(restUntil), closeFirst: true);
         }
 
-        Add(() => $"Weather to set: {chosenWeather} (click to change)", NextWeatherChoice, needsCheats: false);
-        Add(() => $"Set weather here: {chosenWeather}", ApplyWeather);
+        Add(() => $"Weather here now: {NetworkCheats.RunningWeatherHere()} (click to refresh)", RefreshAllLabels, needsCheats: false);
+        Add(() => $"Weather to pick: {ChosenLabel} (click to change)", NextWeatherChoice, needsCheats: false);
+        Add(() => $"Add weather here: {ChosenLabel}", () => ApplyWeather(NetworkCheats.WeatherMode.Add));
+        Add(() => $"Set weather here (replaces): {ChosenLabel}", () => ApplyWeather(NetworkCheats.WeatherMode.Set));
+        Add(() => "Clear weather here", () => ApplyWeather(NetworkCheats.WeatherMode.Clear));
         Add(() => "Spawn a tornado ahead", NetworkCheats.TornadoHere);
         Add(() => "Grow a tangle bud stalk where I look", NetworkCheats.GrowTangleStalk);
         Add(() => "Grow and ripen ranch gardens now", () => NetworkCheats.GrowRanchGardens(out _));
@@ -173,34 +179,64 @@ internal static class CheatMenuButtons
 
     // ---------------------------------------------------------------- weather choice
 
+    private static string RefreshAllLabels()
+    {
+        foreach (var entry in Entries)
+            Refresh(entry);
+
+        return string.Empty;
+    }
+
     private static void RefreshWeatherChoices()
     {
         weatherChoices = NetworkCheats.WeatherChoicesHere(out weatherChoiceZone);
-        if (weatherChoices.All(choice => choice.Label != chosenWeather))
+        if (weatherChoices.Count == 0)
+            chosenWeather = string.Empty;
+        else if (weatherChoices.All(choice => choice.Label != chosenWeather))
             chosenWeather = weatherChoices[0].Label;
     }
 
     private static string NextWeatherChoice()
     {
         RefreshWeatherChoices();
+        if (weatherChoices.Count > 0)
+        {
+            var index = weatherChoices.FindIndex(choice => choice.Label == chosenWeather);
+            chosenWeather = weatherChoices[(index + 1) % weatherChoices.Count].Label;
+        }
 
-        var index = weatherChoices.FindIndex(choice => choice.Label == chosenWeather);
-        chosenWeather = weatherChoices[(index + 1) % weatherChoices.Count].Label;
-
-        // The apply button shows the choice too.
-        foreach (var entry in Entries)
-            Refresh(entry);
+        // The add and set buttons show the choice too.
+        RefreshAllLabels();
 
         if (string.IsNullOrEmpty(weatherChoiceZone))
             return "no weather here";
 
-        return weatherChoices.Count > 1 ? string.Empty : "only clear skies here";
+        return weatherChoices.Count switch
+        {
+            0 => "no weather in this zone",
+            1 => "only one weather here",
+            _ => string.Empty,
+        };
     }
 
-    private static string ApplyWeather()
+    private static string ApplyWeather(NetworkCheats.WeatherMode mode)
     {
-        RefreshWeatherChoices();
-        var choice = weatherChoices.FirstOrDefault(c => c.Label == chosenWeather) ?? weatherChoices[0];
-        return NetworkCheats.ApplyWeatherHere(choice);
+        WeatherStateDefinition? state = null;
+        if (mode != NetworkCheats.WeatherMode.Clear)
+        {
+            RefreshWeatherChoices();
+            var choice = weatherChoices.FirstOrDefault(c => c.Label == chosenWeather);
+            if (choice == null)
+                return "no weather to pick here";
+
+            state = choice.State;
+        }
+
+        var result = NetworkCheats.ApplyWeatherHere(state, mode);
+
+        // The registry applies it on its next update (and a client hears it from the host), so
+        // refresh "Weather here now" a little later.
+        NetworkCheats.Later(() => RefreshAllLabels(), 40);
+        return result;
     }
 }

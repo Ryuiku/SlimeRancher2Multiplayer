@@ -14,6 +14,9 @@ internal sealed class CheatRequestPacket : IPacket
         SetWeather = 1,
         ClearWeather = 2,
         Tornado = 3,
+
+        // A weather on top of what the zone already runs.
+        AddWeather = 4,
     }
 
     public CheatAction Action;

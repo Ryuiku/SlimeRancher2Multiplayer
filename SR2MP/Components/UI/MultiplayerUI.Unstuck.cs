@@ -395,6 +395,7 @@ internal sealed partial class MultiplayerUI
         {
             var input = GameContext.Instance.InputDirector;
             report.Append($"\n  input: mainGame={input._mainGame.Map.enabled} paused={input._paused.Map.enabled}");
+            report.Append($" uiPaused={SR2MP.Patches.UI.InputMapsAfterLoadFix.IsGameMenuOpen(out var openMenus, refreshPedia: true)} ({openMenus})");
             report.Append($"\n  timeScale={UnityEngine.Time.timeScale} sceneLoading={SystemContext.Instance.SceneLoader.IsSceneLoadInProgress}");
             report.Append($"\n  chat: focused={isChatFocused} hidden={chatHidden} disabledInput={disabledInput} activeInput='{activeInputId}'");
             report.Append($"\n  menuOpen={MenuEUtil.isAnyMenuOpen} popupOpen={MenuEUtil.isAnyPopUpOpen} ranchHouse={IsInRanchHouse}");
@@ -554,11 +555,45 @@ internal sealed partial class MultiplayerUI
         }
     }
 
+    // Set when F6 (or InputMapsAfterLoadFix after a zone load) turned the menu controls on for an open menu.
+    // A leftover pauser keeps the game from switching back when that menu closes (it only does so when the
+    // pause count reaches zero), so the gameplay controls are put back here once no menu is open any more.
+    internal static bool menuInputFromUnstuck;
+
+    private void WatchUnstuckMenuInput()
+    {
+        if (!menuInputFromUnstuck)
+            return;
+
+        try
+        {
+            var input = GameContext.Instance.InputDirector;
+            if (!IsInGameplay() || !input._paused.Map.enabled)
+            {
+                menuInputFromUnstuck = false;
+                return;
+            }
+
+            if (SR2MP.Patches.UI.InputMapsAfterLoadFix.IsGameMenuOpen() || MenuEUtil.isAnyMenuOpen || MenuEUtil.isAnyPopUpOpen)
+                return;
+
+            menuInputFromUnstuck = false;
+            SrLogger.LogWarning("Unstuck: the menu that F6 gave controls to has closed but the game kept the menu controls on; turning gameplay controls back on.");
+            input.UpdateInputMaps(false);
+        }
+        catch (Exception ex)
+        {
+            menuInputFromUnstuck = false;
+            SrLogger.LogWarning($"Unstuck: putting gameplay controls back failed: {ex.Message}");
+        }
+    }
+
     private void HandleUnstuck()
     {
         WatchPlayerLock();
         WatchStaleFreeze();
         WatchMovementStall();
+        WatchUnstuckMenuInput();
 
         // Chat got hidden while it was still focused or still held the game's input: let go of both.
         // (F5 while typing left the chat "focused" forever, so F4, Enter and this key stopped working.)
@@ -607,9 +642,35 @@ internal sealed partial class MultiplayerUI
         try
         {
             var input = GameContext.Instance.InputDirector;
+            var scene = SceneContext.Instance;
+            var time = scene ? scene.TimeDirector : null;
 
+            // A game menu (map, slimepedia) holds the game paused but its controls are off: give them back, so it can be closed.
+            if (IsInGameplay() && time && time!.HasPauser()
+                && SR2MP.Patches.UI.InputMapsAfterLoadFix.IsGameMenuOpen(out var openMenu, refreshPedia: true)
+                && !input._paused.Map.enabled)
+            {
+                SrLogger.LogWarning($"Unstuck: a menu is open ({openMenu}) but its controls were off; turning menu controls back on.");
+                input.UpdateInputMaps(true);
+                menuInputFromUnstuck = true;
+            }
+            // The menu controls are on but no menu is open: F6 or the after-load fix turned them on for a menu
+            // that is gone now, or a leftover pause kept the game from switching back. Go back to gameplay controls.
+            // (Only on F6: the per-frame watcher stays gated on the flag, because the slimepedia opener holds the
+            // game paused for a moment before its display is shown.)
+            else if (IsInGameplay() && input._paused.Map.enabled
+                     && !SR2MP.Patches.UI.InputMapsAfterLoadFix.IsGameMenuOpen(out _, refreshPedia: true)
+                     && !MenuEUtil.isAnyMenuOpen && !MenuEUtil.isAnyPopUpOpen)
+            {
+                var fromUnstuck = menuInputFromUnstuck;
+                menuInputFromUnstuck = false;
+                SrLogger.LogWarning(fromUnstuck
+                    ? "Unstuck: no menu is open any more; turning gameplay controls back on."
+                    : "Unstuck: menu controls were on with no menu open (leftover pause?); turning gameplay controls back on.");
+                input.UpdateInputMaps(false);
+            }
             // Not on the main menu or a loading screen: the game keeps its controls off there on purpose.
-            if (IsInGameplay() && !MenuEUtil.isAnyMenuOpen && !MenuEUtil.isAnyPopUpOpen && !input._paused.Map.enabled)
+            else if (IsInGameplay() && !MenuEUtil.isAnyMenuOpen && !MenuEUtil.isAnyPopUpOpen && !input._paused.Map.enabled)
             {
                 isChatFocused = false;
                 activeInputId = string.Empty;

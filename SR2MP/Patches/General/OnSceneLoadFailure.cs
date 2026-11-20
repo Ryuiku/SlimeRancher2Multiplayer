@@ -78,12 +78,18 @@ internal static class OnSceneLoadFailure
         }
     }
 
+    // The game calls this at the end of every zone load, error or not, and it returns at once when
+    // nothing is queued. Only a load that really queued errors is worth an error line and a trace.
     [HarmonyPrefix]
     [HarmonyPatch(typeof(SceneLoader), nameof(SceneLoader.HandleSceneLoadingError))]
     public static void HandleErrorPrefix(SceneLoader __instance)
     {
         try
         {
+            var queued = __instance._loadErrors;
+            if (queued == null || queued.Count == 0)
+                return;
+
             var builder = new StringBuilder();
             builder.AppendLine($"The game is handling a zone load error ({Session()}).");
             AppendErrors(builder, __instance);

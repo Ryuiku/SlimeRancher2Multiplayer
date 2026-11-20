@@ -159,6 +159,7 @@ public sealed class SR2MPClient
             NetworkDroneManager.PendingOwners.Clear();
             NetworkDroneManager.ClearPrograms();
             NetworkGordoSlimeManager.Reset();
+            NetworkTornadoManager.ResetClientState();
 
             serverEndPoint = new IPEndPoint(parsedIp, port);
             udpClient.Connect(serverEndPoint);
@@ -543,6 +544,9 @@ public sealed class SR2MPClient
                             MainThreadDispatcher.Instance.DropClientPackets();
 
                         ActorManager.ReleaseAllToLocal();
+
+                        // The host's tornado copies would linger in the offline world.
+                        NetworkTornadoManager.ResetClientState();
                     }
                 }
                 catch (Exception ex)

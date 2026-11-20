@@ -118,6 +118,22 @@ internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPa
         if (targetJoint == null || resolvedSpawner == null)
             return true;
 
+        // Attach puts the produce back to unripe with a new timer. If the owner's state already got here
+        // (produce spawned ripe, for example by the cheat menu), keep that state instead of the reset one.
+        var produceModel = model.TryCast<ProduceModel>();
+        var keepSynced = false;
+        var syncedState = ResourceCycle.State.UNRIPE;
+        var syncedProgress = 0d;
+        if (produceModel != null && produceModel._state != ResourceCycle.State.UNRIPE)
+        {
+            keepSynced = true;
+            syncedState = produceModel._state;
+            syncedProgress = produceModel.progressTime;
+            if (SR2MP.Components.Actor.NetworkActor.IsResourceFrozen(syncedProgress)
+                && networkComponent.TryGetKnownResourceState(out _, out var knownProgress))
+                syncedProgress = knownProgress;
+        }
+
         HandlingPacket = true;
         try
         {
@@ -130,13 +146,24 @@ internal sealed class ResourceAttachHandler : BasePacketHandler<ResourceAttachPa
         
         resolvedSpawner._spawned.Add(cycle.gameObject);
 
-        var produceModel = model.TryCast<ProduceModel>();
         if (produceModel != null)
         {
-            networkComponent.SetResourceState(produceModel._state, produceModel.progressTime, true);
-            
-            if (produceModel._state == ResourceCycle.State.UNRIPE && cycle._defaultScale.x > 0f)
-                cycle.transform.localScale = cycle._defaultScale * 0.33f;
+            if (keepSynced)
+            {
+                produceModel.state = syncedState;
+                if (!SR2MP.Components.Actor.NetworkActor.IsResourceFrozen(syncedProgress))
+                    produceModel.progressTime = syncedProgress;
+
+                // HandleRipeState / HandleEdibleState turn the vacuumable back on and restore the full scale.
+                networkComponent.SetResourceState(syncedState, syncedProgress, true);
+            }
+            else
+            {
+                networkComponent.SetResourceState(produceModel._state, produceModel.progressTime, true);
+
+                if (produceModel._state == ResourceCycle.State.UNRIPE && cycle._defaultScale.x > 0f)
+                    cycle.transform.localScale = cycle._defaultScale * 0.33f;
+            }
         }
 
         return true;

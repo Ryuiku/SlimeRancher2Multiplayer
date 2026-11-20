@@ -101,6 +101,7 @@ public sealed class SR2MPServer
             SR2MP.Shared.Managers.NetworkDroneManager.CachedOwners.Clear();
             SR2MP.Shared.Managers.NetworkDroneManager.PendingOwners.Clear();
             SR2MP.Shared.Managers.NetworkDroneManager.ClearPrograms();
+            SR2MP.Shared.Managers.NetworkTornadoManager.RegisterExisting();
             MainThreadDispatcher.KeepRunningInBackground();
             InvokeServerStarted();
             MultiplayerUI.Instance.RegisterSystemMessage(
