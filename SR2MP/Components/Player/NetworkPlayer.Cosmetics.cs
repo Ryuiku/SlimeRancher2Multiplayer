@@ -1,3 +1,4 @@
+using Il2CppMonomiPark.SlimeRancher.VFX.EnvironmentInteraction;
 using Il2CppInterop.Runtime.Attributes;
 using Il2CppMonomiPark.SlimeRancher.Player.PlayerItems;
 using Il2CppMonomiPark.SlimeRancher.Ranch;
@@ -468,6 +469,7 @@ internal partial class NetworkPlayer
             var anchor = vacFxAnchor!.transform;
             anchor.position = origin + (aim * NozzleDistance(origin, aim));
             anchor.rotation = rotation;
+            ApplyVacWind(anchor.position, aim, wanted || vacFxOn);
 
             if (wanted)
             {
@@ -519,7 +521,6 @@ internal partial class NetworkPlayer
             .Distinct());
 
         StripToFX(copy);
-        EnableVacKeywordsOnCopy(copy, source);
 
         // The avatar's copy is often off to the side of this camera's view or starts folded up
         // small, and an Animator set to cull would then never run the swirl, so it never shows.
@@ -561,6 +562,7 @@ internal partial class NetworkPlayer
 
         vacFxParticles = copy.GetComponentsInChildren<ParticleSystem>(true);
         vacFxAnimators = copy.GetComponentsInChildren<Animator>(true);
+        vacFxRenderers = copy.GetComponentsInChildren<Renderer>(true);
         vacFxActiveParam = vacuumItem._animActiveId;
         vacFxVacModeParam = vacuumItem._animVacModeId;
         vacFxAnchor = anchorObject;
@@ -575,126 +577,74 @@ internal partial class NetworkPlayer
         return true;
     }
 
-    // The cone's shader only draws while a global shader keyword is on, and the game turns that
-    // keyword on only while this player's own vac runs (WorldParticleVacInteraction sets a scripted
-    // bool, a ShaderGlobalKeywordController turns it into the keyword). So another player's cone
-    // only showed while this player was vaccing too. The copy gets its own materials with the
-    // keyword on: a keyword on the material counts even while the global one is off.
-    private static List<string>? vacKeywords;
+    // The cone's shader cuts the cone off at a "wind distance" from a vac position, two shader
+    // globals the game's VacuumInteractionFX sets each frame for this player's own vac: how far
+    // the vac reaches before hitting something, and 0 while it is off. So another player's cone
+    // only showed while this player vacced too, and then cut off by this player's vac. The copy's
+    // renderers get the other player's own values through a property block, which wins over the
+    // globals.
+    private static VacuumInteractionFX? localVacInteraction;
+    private MaterialPropertyBlock? vacFxBlock;
+    private Renderer[]? vacFxRenderers;
+    private bool vacFxWindLogged;
 
-    private static List<string> VacKeywords(GameObject source)
+    private static VacuumInteractionFX? LocalVacInteraction()
     {
-        if (vacKeywords is { Count: > 0 })
-            return vacKeywords;
+        if (localVacInteraction)
+            return localVacInteraction;
 
-        var found = new List<string>();
-        var log = new List<string>();
-        try
-        {
-            var interaction = source.GetComponentInChildren<Il2CppMonomiPark.SlimeRancher.VFXGraphParticles.WorldParticleVacInteraction>(true);
-            var vacBool = interaction ? interaction!.vacActiveScriptedBool : null;
-            log.Add($"vac bool '{(vacBool ? vacBool!.name : "none")}'");
-
-            foreach (var controller in Resources.FindObjectsOfTypeAll<Il2CppMonomiPark.SlimeRancher.Rendering.ShaderGlobalKeywordController>())
-            {
-                if (!controller)
-                    continue;
-
-                var keyword = controller._keyword;
-                var target = controller.targetValue;
-                var drivenByVac = vacBool && target && target!.Pointer == vacBool!.Pointer;
-                log.Add($"'{keyword}' from '{(target ? target!.name : "none")}'{(drivenByVac ? " (the vac's)" : "")} on={(!string.IsNullOrEmpty(keyword) && Shader.IsKeywordEnabled(keyword))}");
-
-                if (drivenByVac && !string.IsNullOrEmpty(keyword) && !found.Contains(keyword))
-                    found.Add(keyword);
-            }
-
-            // No controller tied to the vac's bool was found: take keywords that name the vac.
-            if (found.Count == 0)
-            {
-                foreach (var controller in Resources.FindObjectsOfTypeAll<Il2CppMonomiPark.SlimeRancher.Rendering.ShaderGlobalKeywordController>())
-                {
-                    var keyword = controller ? controller._keyword : null;
-                    if (!string.IsNullOrEmpty(keyword) && keyword!.Contains("VAC", StringComparison.OrdinalIgnoreCase) && !found.Contains(keyword))
-                        found.Add(keyword);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            log.Add($"failed: {ex.Message}");
-        }
-
-        SrLogger.LogMessage($"Vac stream keywords: using [{string.Join(", ", found)}]; seen: {string.Join(" | ", log)}");
-        vacKeywords = found;
-        return found;
+        var all = Object.FindObjectsOfType<VacuumInteractionFX>();
+        localVacInteraction = all != null && all.Length > 0 ? all[0] : null;
+        return localVacInteraction;
     }
 
-    private static bool ShaderHasKeyword(Shader shader, string keyword)
+    private void ApplyVacWind(Vector3 start, Vector3 aim, bool on)
     {
+        if (vacFxRenderers == null)
+            return;
+
         try
         {
-            var found = shader.keywordSpace.FindKeyword(keyword);
-            return found != null && found.isValid;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+            var interaction = LocalVacInteraction();
+            var maxDistance = interaction ? interaction!._maxVacDistance : 0f;
+            var backOffset = interaction ? interaction!._originBackOffset : 0f;
+            if (maxDistance <= 0f)
+                maxDistance = 10f;
 
-    private void EnableVacKeywordsOnCopy(GameObject copy, GameObject source)
-    {
-        try
-        {
-            var keywords = VacKeywords(source);
-            if (keywords.Count == 0)
-                return;
+            // As the game works it out for its own vac: from a little behind the nozzle, as far as
+            // the vac reaches or the first thing in the way (default layer only, as the game does).
+            var origin = start - (aim * backOffset);
+            var distance = 0f;
+            if (on)
+            {
+                distance = maxDistance;
+                if (Physics.Raycast(origin, aim, out var hit, maxDistance, 1, QueryTriggerInteraction.Ignore))
+                    distance = Mathf.Min(hit.distance, maxDistance);
+            }
 
-            var done = new List<string>();
-            foreach (var renderer in copy.GetComponentsInChildren<Renderer>(true))
+            vacFxBlock ??= new MaterialPropertyBlock();
+            foreach (var renderer in vacFxRenderers)
             {
                 if (!renderer)
                     continue;
 
-                var shared = renderer.sharedMaterials;
-                if (shared == null || shared.Length == 0)
-                    continue;
-
-                var copies = new Material[shared.Length];
-                var changed = false;
-                for (var i = 0; i < shared.Length; i++)
-                {
-                    var material = shared[i];
-                    copies[i] = material;
-                    if (!material || !material.shader)
-                        continue;
-
-                    // keywordNames is not usable through the interop in this game; FindKeyword is.
-                    var shader = material.shader;
-                    var matching = keywords.Where(k => ShaderHasKeyword(shader, k)).ToList();
-                    if (matching.Count == 0)
-                        continue;
-
-                    // A material of our own, so the player's own vac keeps the game's.
-                    var own = new Material(material) { name = material.name + " (SR2MP remote)" };
-                    foreach (var keyword in matching)
-                        own.EnableKeyword(keyword);
-
-                    copies[i] = own;
-                    changed = true;
-                    done.Add($"'{renderer.name}': {string.Join(", ", matching)}");
-                }
-
-                if (changed)
-                    renderer.sharedMaterials = copies;
+                // Kept as they are otherwise: the stream's Animator also writes into this block.
+                renderer.GetPropertyBlock(vacFxBlock);
+                vacFxBlock.SetFloat(VacuumInteractionFX.VAC_WIND_DISTANCE_ID, distance);
+                vacFxBlock.SetVector(VacuumInteractionFX.VAC_VISUAL_WORLD_POSITION_ID, new Vector4(origin.x, origin.y, origin.z, 0f));
+                renderer.SetPropertyBlock(vacFxBlock);
             }
 
-            SrLogger.LogMessage($"Vac stream for avatar {ID}: keywords turned on for {(done.Count == 0 ? "no renderer (none of their shaders use them)" : string.Join(" | ", done))}");
+            if (on && !vacFxWindLogged)
+            {
+                vacFxWindLogged = true;
+                SrLogger.LogMessage($"Vac stream on avatar {ID}: own wind distance {distance:0.##} m (max {maxDistance:0.##}, back offset {backOffset:0.##}, game's vac found: {(bool)interaction}) on {vacFxRenderers.Length} renderers");
+            }
         }
         catch (Exception ex)
         {
-            SrLogger.LogWarning($"Vac stream for avatar {ID}: could not turn on the vac keywords: {ex.Message}");
+            vacFxRenderers = null;
+            SrLogger.LogWarning($"Vac stream on avatar {ID}: could not set its wind distance: {ex.Message}");
         }
     }
 
@@ -1088,25 +1038,13 @@ internal partial class NetworkPlayer
     {
         if (vacFxAnchor)
         {
-            // The copy's own materials (made for the vac keywords) go with it.
-            foreach (var renderer in vacFxAnchor!.GetComponentsInChildren<Renderer>(true))
-            {
-                if (!renderer)
-                    continue;
-
-                foreach (var material in renderer.sharedMaterials)
-                {
-                    if (material && material.name.EndsWith(" (SR2MP remote)", StringComparison.Ordinal))
-                        Destroy(material);
-                }
-            }
-
             Destroy(vacFxAnchor);
         }
 
         vacFxAnchor = null;
         vacFxCopy = null;
         vacFxSource = null;
+        vacFxRenderers = null;
         vacFxParticles = null;
         vacFxAnimators = null;
         vacFxActive = false;
