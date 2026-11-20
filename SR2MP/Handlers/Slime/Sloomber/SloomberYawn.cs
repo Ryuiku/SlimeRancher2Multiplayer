@@ -4,12 +4,14 @@ using Il2CppMonomiPark.SlimeRancher.Slime.Slumber;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.Slime.Sloomber;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.Slime.Sloomber;
 
 // Shows another player's sloomber yawning: the wind-up (yawn animation, the cloud on its head
-// fading), the yawn itself, or the wind-up ending without a yawn. The copy here does not yawn on
-// its own (only the owner's does), so this is all the others see.
+// fading, then the yawn face), the yawn itself, or the wind-up ending without a yawn. The copy here
+// does not yawn on its own (only the owner's does), so this is all the others see. A cheat menu
+// request to yawn is run by the sloomber's owner; the host passes it on when it is not the owner.
 [PacketHandler((byte)PacketType.SloomberYawn)]
 internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket>
 {
@@ -28,8 +30,15 @@ internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket
     private static readonly Dictionary<long, float> WindUpShown = new();
     private static readonly Dictionary<long, int> WindUpVersion = new();
 
-    protected override bool Handle(SloomberYawnPacket packet, IPEndPoint? _)
+    // Sloombers whose yawn face was already shown during the current wind-up.
+    private static readonly HashSet<long> FaceShown = new();
+
+    protected override bool Handle(SloomberYawnPacket packet, IPEndPoint? clientEp)
     {
+        // Runs with HandlingPacket off on purpose: the owner's yawn must be sent by its patches.
+        if (packet.Request)
+            return HandleRequest(packet, clientEp);
+
         if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model))
             return true;
 
@@ -64,7 +73,60 @@ internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket
         return true;
     }
 
+    // A cheat menu request: the owner yawns now through the game's own code, which sends the yawn.
+    private static bool HandleRequest(SloomberYawnPacket packet, IPEndPoint? clientEp)
+    {
+        // The host's live setting decides for a client's request.
+        if (Main.Server.IsRunning && clientEp != null && !Main.AllowCheats)
+        {
+            SrLogger.LogWarning($"Ignored a sloomber yawn request from {clientEp}: cheats are off on this server");
+            return false;
+        }
+
+        if (ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var model)
+            && model.TryGetNetworkComponent(out var networkComponent)
+            && networkComponent.LocallyOwned)
+        {
+            var yawn = networkComponent.GetComponent<InitiateYawn>();
+            if (yawn)
+                NetworkCheats.YawnNow(yawn);
+            return false;
+        }
+
+        // Not this game's sloomber (or not loaded on the host): the host passes it on to its owner.
+        return true;
+    }
+
     private static void BeginWindUp(InitiateYawn yawn, long actorId)
+    {
+        ShowWindUp(yawn);
+
+        WindUpShown[actorId] = UnityEngine.Time.time;
+        FaceShown.Remove(actorId);
+        var version = NextVersion(actorId);
+
+        float faceDelay = 0f, waitTime = WindUpGrace;
+        try
+        {
+            var metadata = yawn.InitiateYawnMetadata;
+            if (metadata)
+            {
+                faceDelay = Mathf.Max(0f, metadata.YawnStartFaceTime);
+                waitTime += faceDelay + Mathf.Max(0f, metadata.TimeUntilCloud);
+            }
+        }
+        catch (Exception exception)
+        {
+            SrLogger.LogDebug($"SloomberYawn: reading the yawn timings failed: {exception.Message}");
+        }
+
+        // The owner shows the yawn face YawnStartFaceTime after its wind-up starts.
+        StartCoroutine(FaceLater(yawn, actorId, version, faceDelay));
+        StartCoroutine(EndWindUpIfAbandoned(yawn, actorId, version, waitTime));
+    }
+
+    // The body animation and the cloud on its head, as the owner's InitiateYawn.Selected or nap yawn starts them.
+    private static void ShowWindUp(InitiateYawn yawn)
     {
         try
         {
@@ -90,28 +152,38 @@ internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket
         {
             SrLogger.LogDebug($"SloomberYawn: wind-up animation failed: {exception.Message}");
         }
+    }
 
-        WindUpShown[actorId] = UnityEngine.Time.time;
-        var version = NextVersion(actorId);
-
-        var waitTime = WindUpGrace;
+    private static void SetFace(InitiateYawn yawn, long actorId)
+    {
+        FaceShown.Add(actorId);
         try
         {
-            var metadata = yawn.InitiateYawnMetadata;
-            if (metadata)
-                waitTime += Mathf.Max(0f, metadata.YawnStartFaceTime) + Mathf.Max(0f, metadata.TimeUntilCloud);
+            var face = yawn._sfAnimator;
+            if (face)
+                face!.SetTrigger(FaceTriggers.YAWN);
         }
         catch (Exception exception)
         {
-            SrLogger.LogDebug($"SloomberYawn: reading the yawn timings failed: {exception.Message}");
+            SrLogger.LogDebug($"SloomberYawn: yawn face failed: {exception.Message}");
         }
+    }
 
-        StartCoroutine(EndWindUpIfAbandoned(yawn, actorId, version, waitTime));
+    private static IEnumerator FaceLater(InitiateYawn yawn, long actorId, int version, float delay)
+    {
+        if (delay > 0f)
+            yield return new WaitForSeconds(delay);
+
+        if (!IsCurrent(actorId, version) || !yawn)
+            yield break;
+
+        SetFace(yawn, actorId);
     }
 
     private static void CancelWindUp(InitiateYawn yawn, long actorId)
     {
         WindUpShown.Remove(actorId);
+        FaceShown.Remove(actorId);
         NextVersion(actorId);
 
         EndReactables(yawn);
@@ -130,7 +202,19 @@ internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket
     {
         var hadWindUp = WindUpShown.Remove(actorId, out var shownAt)
                         && UnityEngine.Time.time - shownAt < WindUpMatchTime;
-        NextVersion(actorId);
+        var faceShown = FaceShown.Remove(actorId) && hadWindUp;
+        var version = NextVersion(actorId);
+
+        // No wind-up arrived (lost, or the yawn came too soon after it): show the animation and the
+        // head cloud with the yawn, so it is not a bare puff.
+        if (!hadWindUp)
+            ShowWindUp(yawn);
+
+        // The owner shows the face before the cloud; a wind-up whose face timer has not fired yet
+        // (it was cut short by this yawn) still gets it.
+        if (!faceShown)
+            SetFace(yawn, actorId);
+        FaceShown.Remove(actorId);
 
         try
         {
@@ -141,36 +225,57 @@ internal sealed class SloomberYawnHandler : BasePacketHandler<SloomberYawnPacket
             SrLogger.LogDebug($"SloomberYawn: DoYawn failed: {exception.Message}");
         }
 
-        EndReactables(yawn);
+        float yawnTime = 1f, recoverTime = 1f;
+        try
+        {
+            var metadata = yawn.InitiateYawnMetadata;
+            if (metadata)
+            {
+                yawnTime = Mathf.Clamp(metadata.YawnTime, 0f, 10f);
+                recoverTime = metadata.RecoverTime;
+            }
+        }
+        catch
+        {
+            // Defaults.
+        }
 
-        if (!hadWindUp)
-            return;
+        // The owner ends the head cloud and particles YawnTime after the cloud, not at once.
+        StartCoroutine(EndYawnLater(yawn, actorId, version, yawnTime));
 
         try
         {
             if (!TryGetAnimation(yawn, out var animator, out var id, out var type))
                 return;
 
-            // The wind-up already started the animation; if DoYawn set the trigger again it would
-            // play a second time.
             if (type == AnimatorControllerParameterType.Trigger)
             {
-                animator.ResetTrigger(id);
+                // A trigger left over from the wind-up must not play the animation a second time. One
+                // set just now (no wind-up) must still play.
+                if (hadWindUp)
+                    animator.ResetTrigger(id);
             }
             else if (type == AnimatorControllerParameterType.Bool)
             {
-                var recoverTime = 1f;
-                var metadata = yawn.InitiateYawnMetadata;
-                if (metadata)
-                    recoverTime = metadata.RecoverTime;
-
-                StartCoroutine(EndBoolLater(yawn, actorId, Mathf.Clamp(recoverTime, 0.5f, 5f)));
+                StartCoroutine(EndBoolLater(yawn, actorId, Mathf.Clamp(yawnTime + recoverTime, 0.5f, 10f)));
             }
         }
         catch (Exception exception)
         {
             SrLogger.LogDebug($"SloomberYawn: ending the yawn animation failed: {exception.Message}");
         }
+    }
+
+    private static IEnumerator EndYawnLater(InitiateYawn yawn, long actorId, int version, float delay)
+    {
+        if (delay > 0f)
+            yield return new WaitForSeconds(delay);
+
+        // A new wind-up started meanwhile: leave its head cloud alone.
+        if (!IsCurrent(actorId, version) || !yawn)
+            yield break;
+
+        EndReactables(yawn);
     }
 
     private static void EndReactables(InitiateYawn yawn)

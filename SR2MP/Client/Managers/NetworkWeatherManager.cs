@@ -4,6 +4,7 @@ using Il2CppMonomiPark.SlimeRancher.World;
 using Il2CppMonomiPark.SlimeRancher.UI.Map;
 using SR2MP.Packets.World;
 using SR2MP.Server.Managers;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Client.Managers;
 
@@ -46,9 +47,24 @@ internal static class NetworkWeatherManager
             Initialize();
     }
 
+    // The game's ids are indexes into its lookup table, so 0 is a real weather (Pollen Heavy).
+    // -1 means none or unknown.
     public static int GetPersistentID(WeatherStateDefinition state)
-        => GameContext.Instance.AutoSaveDirector._saveReferenceTranslation
-            .GetPersistenceId(state.Cast<IWeatherState>());
+    {
+        if (!state)
+            return -1;
+
+        try
+        {
+            return GameContext.Instance.AutoSaveDirector._saveReferenceTranslation
+                .GetPersistenceId(state.Cast<IWeatherState>());
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Weather: no persistence id for {state.name}: {ex.Message}");
+            return -1;
+        }
+    }
 
     // The first few problems go to the normal log so a tester's log shows them, the rest only to debug.
     private static int loggedWeatherProblems;
@@ -152,6 +168,9 @@ internal static class NetworkWeatherManager
         {
             HandlingPacket = false;
         }
+
+        // The host's forecast is in, so an open cheat menu shows it.
+        NetworkCheats.NotifyWeatherChanged();
     }
 
     private static void RebuildForecast(

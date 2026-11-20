@@ -6,24 +6,33 @@ using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.Weather;
 
-[PacketHandler((byte)PacketType.TornadoSpawn, HandlerType.Client)]
+// Both ways: the host sends the tornados it runs and hands a tornado to a client's game when the host
+// player is not near it; that client then reports the tornado's state, which the host passes on.
+[PacketHandler((byte)PacketType.TornadoSpawn)]
 internal sealed class TornadoSpawnHandler : BasePacketHandler<TornadoSpawnPacket>
 {
-    protected override bool Handle(TornadoSpawnPacket packet, IPEndPoint? _)
+    protected override bool Handle(TornadoSpawnPacket packet, IPEndPoint? clientEp)
     {
-        if (packet.Despawn)
-        {
-            NetworkTornadoManager.PendingTornados.Remove(packet.TornadoId);
+        // Host: only the game that runs a tornado may report it; true passes it on to the others.
+        if (IsServerSide)
+            return clientEp != null && NetworkTornadoManager.HandleFromClient(packet, clientEp);
 
-            if (NetworkTornadoManager.ClientTornados.TryGetValue(packet.TornadoId, out var existing))
+        if (packet.Authority)
+        {
+            NetworkTornadoManager.SpawnOwned(packet);
+            return false;
+        }
+
+        // A tornado this game runs: only the host's despawn (it took the tornado back or ended it) applies.
+        if (NetworkTornadoManager.OwnedTornados.TryGetValue(packet.TornadoId, out var own))
+        {
+            if (packet.Despawn)
             {
-                NetworkTornadoManager.ClientTornados.Remove(packet.TornadoId);
-                
+                NetworkTornadoManager.OwnedTornados.Remove(packet.TornadoId);
                 try
                 {
-                    // Fade it out the way the game ends a tornado, as the host's copy does.
-                    if (existing)
-                        NetworkTornadoManager.FadeOut(existing);
+                    if (own)
+                        NetworkTornadoManager.FadeOut(own);
                 }
                 catch (Exception ex)
                 {
@@ -32,31 +41,13 @@ internal sealed class TornadoSpawnHandler : BasePacketHandler<TornadoSpawnPacket
             }
             return false;
         }
-        
-        // A copy this client already has (a resync or the host's regular resend) is updated in place.
-        if (NetworkTornadoManager.TryUpdateExisting(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds))
-        {
-            NetworkTornadoManager.PendingTornados.Remove(packet.TornadoId);
-            return false;
-        }
 
-        if (NetworkTornadoManager.PlayerInDistance(packet.Position))
-        {
-            NetworkTornadoManager.PendingTornados.Remove(packet.TornadoId);
-            NetworkTornadoManager.SpawnTornado(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds);
-        }
+        // A copy this game already has (a resync or the regular resend) is updated in place, a new one
+        // is spawned when this player is near and kept pending otherwise.
+        if (packet.Despawn)
+            NetworkTornadoManager.ApplyDespawn(packet.TornadoId);
         else
-        {
-            NetworkTornadoManager.PendingTornados[packet.TornadoId] = new NetworkTornadoManager.PendingTornado
-            {
-                Position = packet.Position,
-                Rotation = packet.Rotation,
-                Speed = packet.Speed,
-                Spin = packet.Spin,
-                FadeInWorldSeconds = packet.FadeInWorldSeconds,
-                ReceivedAt = UnityEngine.Time.unscaledTime
-            };
-        }
+            NetworkTornadoManager.ApplyCopyState(packet);
 
         return false;
     }

@@ -116,8 +116,10 @@ internal sealed class WeatherForecast : INetObject
 
     public void Serialise(PacketWriter writer)
     {
-        var id = State ? NetworkWeatherManager.GetPersistentID(State!) : 0;
-        if (id == 0)
+        // Ids start at 0 (a real weather), so "none" is -1. Build skips null states today, so this is a
+        // guard; the reader maps -1 to no state.
+        var id = State ? NetworkWeatherManager.GetPersistentID(State!) : -1;
+        if (id < 0)
             SrLogger.LogDebug($"WeatherForecast: no persistence id for state {(State ? State!.name : "null")}");
 
         writer.WritePackedInt(id);

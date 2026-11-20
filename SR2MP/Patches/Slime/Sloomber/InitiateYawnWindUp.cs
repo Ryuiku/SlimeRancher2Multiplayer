@@ -60,27 +60,60 @@ internal static class InitiateYawnWindUp
         return actorId != 0;
     }
 
-    private static void Check(InitiateYawn yawn)
+    private static void Check(InitiateYawn yawn, bool started = false)
+    {
+        var state = yawn._state;
+        Note(yawn, state == InitiateYawn.State.IDLE,
+            state is InitiateYawn.State.BEGIN_YAWNFACE or InitiateYawn.State.BEGIN_YAWN, started);
+    }
+
+    /// <summary>
+    /// Owner only (checked here): this sloomber's yawn, run by InitiateYawn or by SlimeNap while it
+    /// naps, is idle or winding up. started: a new yawn just began, so an entry left from an earlier
+    /// cycle (a nap yawn marks it yawned and never reaches InitiateYawn's idle) cannot hide its wind-up.
+    /// </summary>
+    internal static void Note(InitiateYawn yawn, bool idle, bool windingUp, bool started = false)
     {
         if (!TryGetOwnedActorId(yawn, out var actorId))
             return;
 
-        var state = yawn._state;
-
-        if (state == InitiateYawn.State.IDLE)
-        {
+        if (idle || started)
             Cycles.Remove(actorId);
-            return;
-        }
 
-        if (state is not (InitiateYawn.State.BEGIN_YAWNFACE or InitiateYawn.State.BEGIN_YAWN))
-            return;
-
-        if (Cycles.ContainsKey(actorId))
+        if (idle || !windingUp || Cycles.ContainsKey(actorId))
             return;
 
         Cycles[actorId] = BeginSent;
         Main.SendToAllOrServer(new SloomberYawnPacket { ActorId = new Il2CppMonomiPark.SlimeRancher.DataModel.ActorId(actorId), Active = true });
+    }
+
+    /// <summary>
+    /// The yawn stopped before its cloud (the behaviour was deselected): cancel a wind-up that was
+    /// sent, and forget the cycle.
+    /// </summary>
+    internal static void NoteStopped(InitiateYawn yawn)
+    {
+        if (Cycles.Count == 0)
+            return;
+
+        var networkActor = yawn.GetComponent<NetworkActor>();
+        if (!networkActor)
+            return;
+
+        // Forgotten even when the slime is no longer ours, so a later wind-up is sent again.
+        var actorId = networkActor.ActorId.Value;
+        if (!Cycles.Remove(actorId, out var cycle) || cycle != BeginSent)
+            return;
+
+        if (TryGetOwnedActorId(yawn, out _))
+        {
+            Main.SendToAllOrServer(new SloomberYawnPacket
+            {
+                ActorId = new Il2CppMonomiPark.SlimeRancher.DataModel.ActorId(actorId),
+                Active = false,
+                Cancel = true
+            });
+        }
     }
 
     [HarmonyPatch(nameof(InitiateYawn.Selected)), HarmonyPostfix]
@@ -88,8 +121,9 @@ internal static class InitiateYawnWindUp
     {
         try
         {
+            // A Selected always starts a new yawn.
             if (__runOriginal)
-                Check(__instance);
+                Check(__instance, started: true);
         }
         catch (Exception exception)
         {
@@ -117,27 +151,8 @@ internal static class InitiateYawnWindUp
     {
         try
         {
-            if (!__runOriginal || Cycles.Count == 0)
-                return;
-
-            var networkActor = __instance.GetComponent<NetworkActor>();
-            if (!networkActor)
-                return;
-
-            // Forgotten even when the slime is no longer ours, so a later wind-up is sent again.
-            var actorId = networkActor.ActorId.Value;
-            if (!Cycles.Remove(actorId, out var cycle) || cycle != BeginSent)
-                return;
-
-            if (TryGetOwnedActorId(__instance, out _))
-            {
-                Main.SendToAllOrServer(new SloomberYawnPacket
-                {
-                    ActorId = new Il2CppMonomiPark.SlimeRancher.DataModel.ActorId(actorId),
-                    Active = false,
-                    Cancel = true
-                });
-            }
+            if (__runOriginal)
+                NoteStopped(__instance);
         }
         catch (Exception exception)
         {

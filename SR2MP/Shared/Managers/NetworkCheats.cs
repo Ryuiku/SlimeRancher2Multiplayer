@@ -1,5 +1,7 @@
+using System.Net;
 using Il2CppMonomiPark.SlimeRancher.DataModel;
 using Il2CppMonomiPark.SlimeRancher.Player;
+using Il2CppMonomiPark.SlimeRancher.Slime;
 using Il2CppMonomiPark.SlimeRancher.Slime.Dervish;
 using Il2CppMonomiPark.SlimeRancher.Slime.Slumber;
 using Il2CppMonomiPark.SlimeRancher.Slime.Tangle;
@@ -9,6 +11,7 @@ using Il2CppMonomiPark.SlimeRancher.World;
 using SR2MP.Client.Managers;
 using SR2MP.Components.Actor;
 using SR2MP.Components.LandPlots;
+using SR2MP.Packets.Slime.Sloomber;
 using SR2MP.Packets.World;
 using SR2MP.Server.Managers;
 
@@ -19,7 +22,8 @@ namespace SR2MP.Shared.Managers;
 /// Everything here goes through the game's own code paths, so the existing sync carries it:
 /// time skips through the fast-forward sync, weather through the host's forecast, stalks, buds,
 /// yawns, cyclones and gordo bursts through their own packets. Things only the host runs
-/// (weather, tornados) are asked of the host by a client.
+/// (weather, tornados) are asked of the host by a client, and yawns of sloombers this game does
+/// not run are asked of their owner.
 /// </summary>
 internal static class NetworkCheats
 {
@@ -121,18 +125,278 @@ internal static class NetworkCheats
 
     // ---------------------------------------------------------------- weather
 
-    internal sealed class WeatherChoice
-    {
-        public string Label = string.Empty;
-        public WeatherStateDefinition? State;
-    }
-
-    /// <summary>Set: only this weather. Add: this weather on top of what runs. Clear: no weather.</summary>
+    /// <summary>Set: only this weather. Add: this weather on top of what runs. Clear: no weather.
+    /// ClearPattern: one weather type (pattern) off, the others keep running.</summary>
     internal enum WeatherMode : byte
     {
         Set,
         Add,
         Clear,
+        ClearPattern,
+    }
+
+    /// <summary>Raised when this game's weather may have changed (the host's forecast arrived, or the
+    /// host changed or sent its own), so an open cheat menu can update its weather buttons.</summary>
+    internal static event Action? WeatherChanged;
+
+    internal static void NotifyWeatherChanged()
+    {
+        try
+        {
+            WeatherChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Cheat menu weather refresh failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>One weather type (pattern) of a zone: its name, map icon and levels (lowest first).</summary>
+    internal sealed class WeatherTypeInfo
+    {
+        public string Name = string.Empty;
+        public Sprite? Icon;
+        public List<WeatherStateDefinition> Levels = new();
+        public List<string> LevelNames = new();
+
+        public string LevelName(int level)
+            => level <= 0 ? "Off" : level <= LevelNames.Count ? LevelNames[level - 1] : "?";
+    }
+
+    internal sealed class WeatherTypeHere
+    {
+        public WeatherPatternDefinition Pattern = null!;
+        public WeatherTypeInfo Info = null!;
+
+        // 0 = off, n = Info.Levels[n - 1].
+        public int Current;
+    }
+
+    private static readonly Dictionary<IntPtr, WeatherTypeInfo> WeatherTypeInfos = new();
+
+    internal static void ForgetWeatherTypes() => WeatherTypeInfos.Clear();
+
+    /// <summary>"Rain Pattern Fields" gives "Rain", "Slime Rain Pattern Valley" gives "Slime Rain". A name
+    /// without " Pattern" falls back to the type's analytics name.</summary>
+    internal static string PatternLabel(WeatherPatternDefinition pattern)
+    {
+        var name = pattern.name ?? string.Empty;
+        var cut = name.IndexOf(" Pattern", StringComparison.Ordinal);
+        if (cut > 0)
+            return name[..cut].Trim();
+
+        try
+        {
+            var metadata = pattern.Metadata;
+            if (metadata && !string.IsNullOrEmpty(metadata!.AnalyticsName))
+                return metadata.AnalyticsName;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Cheat menu: no type name for {name}: {ex.Message}");
+        }
+
+        return name.Trim();
+    }
+
+    // The level a state's name says. The names (Light, Med or Medium, Heavy) are what the game uses.
+    private static int LevelRank(string label)
+        => label.Contains("Light", StringComparison.OrdinalIgnoreCase) ? 1
+            : label.Contains("Med", StringComparison.OrdinalIgnoreCase) ? 2
+            : label.Contains("Heavy", StringComparison.OrdinalIgnoreCase) ? 3
+            : 0;
+
+    private static int MapTierOf(WeatherStateDefinition state)
+    {
+        try
+        {
+            return state.MapTier;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static WeatherTypeInfo DescribePattern(WeatherPatternDefinition pattern)
+    {
+        if (WeatherTypeInfos.TryGetValue(pattern.Pointer, out var known))
+            return known;
+
+        var info = new WeatherTypeInfo { Name = PatternLabel(pattern) };
+        try
+        {
+            // The map's weather icon, as WeatherIndicator.Configure shows it.
+            var metadata = pattern.Metadata;
+            info.Icon = metadata ? metadata!.Icon : null;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Cheat menu: no icon for {pattern.name}: {ex.Message}");
+        }
+
+        NetworkWeatherManager.CheckInitialized();
+        var seen = new HashSet<IntPtr>();
+        foreach (var state in NetworkWeatherManager.WeatherStates.Values)
+        {
+            if (state && seen.Add(state.Pointer) && pattern.ContainsState(state.Cast<IWeatherState>()))
+                info.Levels.Add(state);
+        }
+
+        // A pattern that also lists another type's state keeps to its own type's states.
+        var prefix = info.Name + " ";
+        if (info.Levels.Any(s => StateLabel(s).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            info.Levels.RemoveAll(s => !StateLabel(s).StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+        // By the level in the name first; the map tier only breaks ties.
+        info.Levels.Sort((a, b) =>
+        {
+            var byName = LevelRank(StateLabel(a)).CompareTo(LevelRank(StateLabel(b)));
+            return byName != 0 ? byName : MapTierOf(a).CompareTo(MapTierOf(b));
+        });
+
+        foreach (var state in info.Levels)
+        {
+            var label = StateLabel(state);
+            if (info.Levels.Count == 1)
+                label = "On";
+            else if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                label = label[prefix.Length..].Trim();
+
+            if (label == "Med")
+                label = "Medium";
+
+            info.LevelNames.Add(string.IsNullOrEmpty(label) ? $"Level {MapTierOf(state)}" : label);
+        }
+
+        WeatherTypeInfos[pattern.Pointer] = info;
+        return info;
+    }
+
+    // An entry belongs to a pattern when it names it, or, with no pattern of its own (the host can have
+    // such entries), when the pattern has its state.
+    private static bool EntryOfPattern(WeatherModel.ForecastEntry entry, WeatherPatternDefinition pattern)
+        => entry.Pattern
+            ? entry.Pattern.Pointer == pattern.Pointer
+            : entry.State != null && pattern.ContainsState(entry.State);
+
+    // The pattern's level now: its newest entry that is due and not ended. A due entry counts before the
+    // registry starts it, so the host's own change shows at once. On a client this is the host's forecast.
+    private static int CurrentLevel(WeatherRegistry.ZoneWeatherData data, WeatherPatternDefinition pattern,
+        List<WeatherStateDefinition> levels, double now)
+    {
+        var forecast = data.Forecast;
+        if (forecast == null)
+            return 0;
+
+        var level = 0;
+        var newest = double.MinValue;
+        foreach (var entry in forecast)
+        {
+            if (entry == null || entry.State == null || !EntryOfPattern(entry, pattern))
+                continue;
+
+            if ((!entry.Started && entry.StartTime > now) || (entry.IsEndTimeKnown && entry.EndTime <= now))
+                continue;
+
+            if (entry.StartTime < newest)
+                continue;
+
+            var statePointer = entry.State.Pointer;
+            var index = levels.FindIndex(s => s.Pointer == statePointer);
+            if (index < 0)
+                continue;
+
+            newest = entry.StartTime;
+            level = index + 1;
+        }
+
+        return level;
+    }
+
+    /// <summary>The weather types (patterns) of the player's zone, by name, with what each runs now.</summary>
+    internal static List<WeatherTypeHere> WeatherTypesHere(out string zoneName)
+    {
+        var types = new List<WeatherTypeHere>();
+        zoneName = string.Empty;
+
+        var zone = CurrentWeatherZone(out var data);
+        if (!zone || data == null)
+            return types;
+
+        zoneName = zone!.name;
+        var patterns = data.Config ? data.Config.Patterns : null;
+        if (patterns == null)
+            return types;
+
+        var time = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+        var now = time ? time!.WorldTime() : 0d;
+        var seen = new HashSet<IntPtr>();
+        for (var i = 0; i < patterns.Count; i++)
+        {
+            var pattern = patterns[i];
+            if (!pattern || !seen.Add(pattern.Pointer))
+                continue;
+
+            var info = DescribePattern(pattern);
+            if (info.Levels.Count == 0)
+                continue;
+
+            types.Add(new WeatherTypeHere { Pattern = pattern, Info = info, Current = CurrentLevel(data, pattern, info.Levels, now) });
+        }
+
+        types.Sort((a, b) => string.Compare(a.Info.Name, b.Info.Name, StringComparison.OrdinalIgnoreCase));
+        return types;
+    }
+
+    internal static bool WeatherChangeDone(string result)
+        => result is "added" or "made longer" or "turned off" or "cleared" or "done" or "asked the host";
+
+    /// <summary>One weather type to one level in the player's zone (a null state turns it off); the other
+    /// types keep running. The host does it; a client asks.</summary>
+    internal static string SetWeatherLevelHere(WeatherPatternDefinition pattern, WeatherStateDefinition? state)
+    {
+        var zone = CurrentWeatherZone(out _);
+        if (!zone)
+            return "no weather here";
+
+        if (IsClient)
+        {
+            var stateId = -1;
+            if (state)
+            {
+                stateId = NetworkWeatherManager.GetPersistentID(state!);
+                if (stateId < 0)
+                    return "unknown weather";
+            }
+
+            Main.Client.SendPacket(new CheatRequestPacket
+            {
+                Action = state ? CheatRequestPacket.CheatAction.AddWeather : CheatRequestPacket.CheatAction.ClearWeatherPattern,
+                Zone = zone!.name,
+                StateId = stateId,
+                PatternName = pattern.name,
+                Hours = WeatherHours,
+            });
+            return "asked the host";
+        }
+
+        return ChangeWeather(zone!, state, WeatherHours, state ? WeatherMode.Add : WeatherMode.ClearPattern, pattern);
+    }
+
+    private static bool IsZonePattern(WeatherRegistry.ZoneWeatherData data, WeatherPatternDefinition pattern)
+    {
+        var patterns = data.Config ? data.Config.Patterns : null;
+        if (patterns == null)
+            return false;
+
+        for (var i = 0; i < patterns.Count; i++)
+        {
+            if (patterns[i] && patterns[i].Pointer == pattern.Pointer)
+                return true;
+        }
+
+        return false;
     }
 
     private static string StateLabel(WeatherStateDefinition state)
@@ -179,36 +443,6 @@ internal static class NetworkCheats
         }
 
         return null;
-    }
-
-    /// <summary>Every weather the zone's own patterns can show (clear skies has its own button).</summary>
-    internal static List<WeatherChoice> WeatherChoicesHere(out string zoneName)
-    {
-        var choices = new List<WeatherChoice>();
-        zoneName = string.Empty;
-
-        var zone = CurrentWeatherZone(out var data);
-        if (!zone || data == null)
-            return choices;
-
-        zoneName = zone!.name;
-        var patterns = data.Config ? data.Config.Patterns : null;
-        if (patterns == null)
-            return choices;
-
-        NetworkWeatherManager.CheckInitialized();
-        var seen = new HashSet<IntPtr>();
-        foreach (var state in NetworkWeatherManager.WeatherStates.Values)
-        {
-            if (!state || !seen.Add(state.Pointer))
-                continue;
-
-            if (PatternFor(data, state.Cast<IWeatherState>()))
-                choices.Add(new WeatherChoice { Label = StateLabel(state), State = state });
-        }
-
-        choices.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
-        return choices;
     }
 
     /// <summary>What runs in the player's zone now, e.g. "Thunder Medium + Wind Light". On a client
@@ -274,8 +508,9 @@ internal static class NetworkCheats
 
         if (IsClient)
         {
-            var stateId = state ? NetworkWeatherManager.GetPersistentID(state!) : 0;
-            if (state && stateId == 0)
+            // Weather ids start at 0 (Pollen Heavy is 0), so "none" is -1.
+            var stateId = state ? NetworkWeatherManager.GetPersistentID(state!) : -1;
+            if (state && stateId < 0)
                 return "unknown weather";
 
             Main.Client.SendPacket(new CheatRequestPacket
@@ -297,7 +532,7 @@ internal static class NetworkCheats
     }
 
     /// <summary>Host: a client's request, by the names and ids the weather sync uses.</summary>
-    internal static string SetWeatherByIds(string zoneName, int stateId, float hours, WeatherMode mode)
+    internal static string SetWeatherByIds(string zoneName, int stateId, float hours, WeatherMode mode, string patternName = "")
     {
         var registry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
         if (!registry || registry!._zones == null)
@@ -316,12 +551,31 @@ internal static class NetworkCheats
         if (!zone)
             return $"no weather zone '{zoneName}'";
 
-        WeatherStateDefinition? state = null;
+        hours = Mathf.Clamp(hours, 0.25f, 12f);
 
-        // Older clients and "set nothing" mean clear skies.
-        if (mode != WeatherMode.Clear && stateId == 0)
+        // The zone's own pattern the button was for, by the asset name the weather sync uses.
+        WeatherPatternDefinition? pattern = null;
+        if (!string.IsNullOrEmpty(patternName) && registry._zones.TryGetValue(zone!, out var data) && data != null)
+        {
+            var patterns = data.Config ? data.Config.Patterns : null;
+            for (var i = 0; patterns != null && i < patterns.Count; i++)
+            {
+                if (patterns[i] && patterns[i].name == patternName)
+                {
+                    pattern = patterns[i];
+                    break;
+                }
+            }
+        }
+
+        if (mode == WeatherMode.ClearPattern)
+            return pattern ? ChangeWeather(zone!, null, hours, mode, pattern) : $"no weather type '{patternName}' in {zoneName}";
+
+        // "Set nothing" means clear skies. Ids start at 0 (a real weather), so nothing is -1.
+        if (mode == WeatherMode.Set && stateId < 0)
             mode = WeatherMode.Clear;
 
+        WeatherStateDefinition? state = null;
         if (mode != WeatherMode.Clear)
         {
             NetworkWeatherManager.CheckInitialized();
@@ -329,7 +583,7 @@ internal static class NetworkCheats
                 return $"unknown weather {stateId}";
         }
 
-        return ChangeWeather(zone!, state, Mathf.Clamp(hours, 0.25f, 12f), mode);
+        return ChangeWeather(zone!, state, hours, mode, pattern);
     }
 
     /// <summary>
@@ -339,10 +593,12 @@ internal static class NetworkCheats
     /// Set ends everything running now, drops upcoming weather inside the window, and adds this weather.
     /// Add touches only this weather's own pattern (and entries of the same state): it ends that
     /// pattern's running state and adds this one, and other patterns keep running.
-    /// Clear is Set with nothing added.
+    /// Clear is Set with nothing added. ClearPattern ends one pattern's weather, running or upcoming in the
+    /// window, and leaves the other patterns alone.
     /// The registry stops and starts the states on its next update, and the weather sync passes that on.
     /// </summary>
-    internal static string ChangeWeather(ZoneDefinition zone, WeatherStateDefinition? state, float hours, WeatherMode mode)
+    internal static string ChangeWeather(ZoneDefinition zone, WeatherStateDefinition? state, float hours, WeatherMode mode,
+        WeatherPatternDefinition? forPattern = null)
     {
         var scene = SceneContext.Instance;
         var registry = scene ? scene.WeatherRegistry : null;
@@ -353,7 +609,7 @@ internal static class NetworkCheats
         if (!registry._zones.TryGetValue(zone, out var data) || data == null)
             return "no weather here";
 
-        if (mode == WeatherMode.Clear)
+        if (mode is WeatherMode.Clear or WeatherMode.ClearPattern)
             state = null;
         else if (!state)
             return "pick a weather first";
@@ -363,9 +619,20 @@ internal static class NetworkCheats
         if (state)
         {
             asState = state!.Cast<IWeatherState>();
-            pattern = PatternFor(data, asState);
+
+            // The type the button is for, when it is this zone's and has the state; otherwise the zone's own.
+            pattern = forPattern && IsZonePattern(data, forPattern!) && forPattern!.ContainsState(asState)
+                ? forPattern
+                : PatternFor(data, asState);
             if (!pattern)
                 return $"{zone.name} has no {StateLabel(state)}";
+        }
+        else if (mode == WeatherMode.ClearPattern)
+        {
+            if (!forPattern || !IsZonePattern(data, forPattern!))
+                return $"{zone.name} has no such weather";
+
+            pattern = forPattern;
         }
 
         var forecast = data.Forecast;
@@ -385,14 +652,15 @@ internal static class NetworkCheats
                 continue;
             }
 
-            var samePattern = pattern && entry.Pattern && entry.Pattern.Pointer == pattern!.Pointer;
+            var samePattern = pattern && EntryOfPattern(entry, pattern!);
 
             // The director runs a state once per start without checking for a copy, so the same state
             // in another pattern has to end too, or it would run twice.
             var sameState = asState != null && entry.State != null && entry.State.Pointer == asState.Pointer;
 
-            // Add leaves the other patterns' weather alone, running or upcoming, so it stacks.
-            if (mode == WeatherMode.Add && !samePattern && !sameState)
+            // Add and turning one type off leave the other patterns' weather alone, running or upcoming,
+            // so weather stacks.
+            if ((mode is WeatherMode.Add or WeatherMode.ClearPattern) && !samePattern && !sameState)
                 continue;
 
             if (entry.Started)
@@ -443,7 +711,9 @@ internal static class NetworkCheats
             Later(WeatherUpdateHelper.SendWeatherUpdate, 30);
         }
 
-        var what = state ? $"{StateLabel(state!)} for {hours:0.#} h" : "clear skies";
+        var what = state ? $"{StateLabel(state!)} for {hours:0.#} h"
+            : mode == WeatherMode.ClearPattern ? $"{PatternLabel(pattern!)} off for {hours:0.#} h"
+            : "clear skies";
         SrLogger.LogMessage($"Cheat menu: weather in {zone.name}: {mode} {what}{(extended ? " (made longer)" : string.Empty)}");
         if (extended)
             return "made longer";
@@ -452,6 +722,7 @@ internal static class NetworkCheats
         {
             WeatherMode.Add => "added",
             WeatherMode.Clear => "cleared",
+            WeatherMode.ClearPattern => "turned off",
             _ => "done",
         };
     }
@@ -490,18 +761,29 @@ internal static class NetworkCheats
             forward = Vector3.forward;
         forward.Normalize();
 
-        // The host finds the ground itself, from the tornado's own check height.
         var spot = position.Value + forward * 25f;
         var rotation = Quaternion.LookRotation(forward);
 
         if (IsClient)
         {
+            // The host may have no colliders where this player stands (it only has them near its own
+            // player), so this game tests the spot with its own physics and sends the tested path.
+            var activity = TornadoActivity();
+            if (activity == null)
+                return "no tornado found in the game";
+
+            if (!FindTornadoSpot(activity, spot, rotation.eulerAngles.y, out var tested, out var yaw, out var speed, out var life))
+                return "no open ground for a tornado there";
+
             Main.Client.SendPacket(new CheatRequestPacket
             {
                 Action = CheatRequestPacket.CheatAction.Tornado,
-                Position = spot,
-                Rotation = rotation,
+                Position = tested,
+                Rotation = Quaternion.Euler(0f, yaw, 0f),
+                Speed = speed,
             });
+            SrLogger.LogMessage($"Cheat menu: tornado spot {tested}, heading {yaw * 2f % 360f:0} degrees, "
+                                + $"speed {speed:0.#}, path tested clear here for {life:0.#} s");
             return "asked the host";
         }
 
@@ -519,6 +801,36 @@ internal static class NetworkCheats
         if (!FindTornadoSpot(activity, position, rotation.eulerAngles.y, out var spot, out var yaw, out var speed, out var life))
             return "no open ground for a tornado there";
 
+        return SpawnTestedTornado(activity, spot, yaw, speed, life, position);
+    }
+
+    /// <summary>Host: a client's tornado request, with the spot, heading and speed the client tested
+    /// with its own physics. The host runs it as before when its own player is near and the same path
+    /// passes here too. Otherwise the host has no colliders there, so the requesting player's game runs
+    /// it for everyone and the host only gives it an id and passes its state on.</summary>
+    internal static string SpawnRequestedTornado(Vector3 spot, Quaternion rotation, float speed, IPEndPoint? requester)
+    {
+        // A request without a tested path (no speed) is placed by the host, as before.
+        if (speed <= 0f || requester == null)
+            return SpawnTornadoAt(spot, rotation);
+
+        var activity = TornadoActivity();
+        if (activity == null)
+            return "no tornado found in the game";
+
+        var yaw = rotation.eulerAngles.y;
+        TornadoAdjust(activity, out var up, out var down);
+        var life = TornadoLife(spot, yaw, speed, up, down, TornadoTestSeconds);
+        if (life >= TornadoMinSeconds && NetworkTornadoManager.PlayerInDistance(spot))
+            return SpawnTestedTornado(activity, spot, yaw, speed, life, spot);
+
+        var id = NetworkTornadoManager.GrantToRequester(requester, spot, rotation, speed, TornadoCheatMinHours);
+        SrLogger.LogMessage($"Cheat menu: tornado {id} at {spot}: not near the host here (path clear {life:0.#} s), so {requester}'s game runs it");
+        return "handed to the requesting player";
+    }
+
+    private static string SpawnTestedTornado(SpawnTornadoActivity activity, Vector3 spot, float yaw, float speed, float life, Vector3 askedFor)
+    {
         // Read by OnTornadoSpawn.Postfix before it shares the tornado.
         NetworkTornadoManager.NextSpeed = speed;
         NetworkTornadoManager.NextMinLifetimeHours = TornadoCheatMinHours;
@@ -536,12 +848,13 @@ internal static class NetworkCheats
         if (!tornado)
             return "the game made no tornado";
 
-        SrLogger.LogMessage($"Cheat menu: tornado at {spot} (asked for {position}), heading {yaw * 2f % 360f:0} degrees, "
+        SrLogger.LogMessage($"Cheat menu: tornado at {spot} (asked for {askedFor}), heading {yaw * 2f % 360f:0} degrees, "
                             + $"speed {speed:0.#}, path tested clear for {life:0.#} s");
         return "spawned";
     }
 
-    private static SpawnTornadoActivity? TornadoActivity()
+    /// <summary>A tornado activity whose Prefab is set (some instances in memory have none).</summary>
+    internal static SpawnTornadoActivity? TornadoActivity()
     {
         var last = NetworkTornadoManager.LastActivity;
         if (last != null && last.Prefab)
@@ -565,6 +878,20 @@ internal static class NetworkCheats
                || Physics.Raycast(column + Vector3.up * 40f, Vector3.down, out hit, 120f, TornadoGroundMask, QueryTriggerInteraction.Ignore);
     }
 
+    // The mover's ground check heights, from the activity's tornado prefab.
+    private static void TornadoAdjust(SpawnTornadoActivity activity, out float up, out float down)
+    {
+        up = TornadoDefaultAdjust;
+        down = TornadoDefaultAdjust;
+        var prefab = activity.Prefab;
+        var mover = prefab ? prefab.GetComponent<SlimenadoMoveSpiral>() : null;
+        if (mover)
+        {
+            up = mover!._groundHeightAdjustUp;
+            down = mover._groundHeightAdjustDown;
+        }
+    }
+
     /// <summary>Tries the requested spot, then rings around it, and several headings for each spot,
     /// until the game's own mover would survive TornadoTestSeconds there.</summary>
     private static bool FindTornadoSpot(SpawnTornadoActivity activity, Vector3 around, float lookYaw,
@@ -576,15 +903,7 @@ internal static class NetworkCheats
         speed = UnityEngine.Random.Range(Mathf.Min(activity.MinSpeed, activity.MaxSpeed),
                                          Mathf.Max(activity.MinSpeed, activity.MaxSpeed));
 
-        var up = TornadoDefaultAdjust;
-        var down = TornadoDefaultAdjust;
-        var prefab = activity.Prefab;
-        var mover = prefab ? prefab.GetComponent<SlimenadoMoveSpiral>() : null;
-        if (mover)
-        {
-            up = mover!._groundHeightAdjustUp;
-            down = mover._groundHeightAdjustDown;
-        }
+        TornadoAdjust(activity, out var up, out var down);
 
         // The mover travels at twice its yaw (it translates its forward in its own space), so yaws over
         // half a turn cover every heading; start with the one that heads away from the player.
@@ -731,7 +1050,31 @@ internal static class NetworkCheats
     // ---------------------------------------------------------------- gardens
 
     /// <summary>
-    /// Ranch gardens: unripe produce this game runs ripens now (per produce actor, whoever runs the
+    /// The button: every game grows the gardens it runs and ripens the produce it runs, so one press
+    /// covers every ranch garden whoever runs it. This game runs its part now. A client asks the host,
+    /// which runs its part and tells the other clients to run theirs (CheatRun); a host tells every client.
+    /// </summary>
+    internal static string GrowRanchGardensForAll()
+    {
+        var result = GrowRanchGardens(out _);
+
+        if (Main.Server.IsRunning)
+        {
+            Main.Server.SendToAll(new CheatRunPacket { Action = CheatRunPacket.CheatAction.GrowGardens });
+            return result + ", sent to all";
+        }
+
+        if (IsClient)
+        {
+            Main.Client.SendPacket(new CheatRequestPacket { Action = CheatRequestPacket.CheatAction.GrowGardens });
+            return result + ", asked the host";
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// This game's part of the garden cheat. Ranch gardens: unripe produce this game runs ripens now (per produce actor, whoever runs the
     /// garden), and gardens this game runs fill every empty spot with ripe produce right away through
     /// the game's own ripe spawn. New produce and ripeness reach the others through the actor spawn,
     /// ResourceAttach and actor state sync.
@@ -909,30 +1252,76 @@ internal static class NetworkCheats
 
     // ---------------------------------------------------------------- slimes
 
-    /// <summary>Sloombers near the player that this game runs yawn as soon as they can.</summary>
+    /// <summary>Every sloomber near the player yawns, for everyone: this game's own ones now, the
+    /// others are asked of their owner (a client asks the host, which passes it on).</summary>
     internal static string SloombersYawn()
     {
         var position = PlayerPosition();
         if (position == null)
             return "not in a game";
 
-        int count = 0, others = 0;
+        int count = 0, asked = 0;
         foreach (var yawn in Object.FindObjectsOfType<InitiateYawn>())
         {
             if (!yawn || (yawn.transform.position - position.Value).sqrMagnitude > NearbyRadius * NearbyRadius)
                 continue;
 
-            if (!OwnedHere(yawn))
+            if (OwnedHere(yawn))
             {
-                others++;
+                YawnNow(yawn);
+                count++;
                 continue;
             }
 
-            yawn._cooldownUntilTime = 0;
-            count++;
+            var actor = yawn.GetComponentInParent<NetworkActor>();
+            var actorId = actor ? actor!.ActorId.Value : 0;
+            if (actorId == 0)
+                continue;
+
+            Main.SendToAllOrServer(new SloomberYawnPacket { ActorId = new ActorId(actorId), Request = true });
+            asked++;
         }
 
-        return Nearby(count, others, "sloomber");
+        if (count == 0 && asked == 0)
+            return "no sloomber nearby";
+
+        return $"{count} yawning, {asked} asked of their owner";
+    }
+
+    /// <summary>Owner only: the sloomber yawns through the game's own code, so the yawn sync sends
+    /// it. A napping one yawns in its sleep on its next physics tick (SlimeNap.Action starts a yawn
+    /// once the cooldown has passed); an awake one is switched to its yawn behaviour now when its
+    /// current behaviour may be interrupted, otherwise it yawns when that ends.</summary>
+    internal static void YawnNow(InitiateYawn yawn)
+    {
+        yawn._cooldownUntilTime = 0;
+        try
+        {
+            // The field InitiateYawn.Awake sets.
+            var nap = yawn._slimeNap;
+            if (!nap)
+                nap = yawn.GetComponent<SlimeNap>();
+            if (nap && nap!._selected)
+                return;
+
+            if (yawn._state != InitiateYawn.State.IDLE)
+                return;
+
+            var plexer = yawn.Plexer;
+            if (!plexer || plexer.IsCaptive() || plexer.IsBehaviorBlocked())
+                return;
+
+            var current = plexer.CurrentBehavior;
+            if (current && (current!.Pointer == yawn.Pointer || !current.CanRethink()))
+                return;
+
+            // Deselects the current behaviour and runs InitiateYawn.Selected, whose patch sends the wind-up.
+            plexer.ForceBehavior(yawn);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Cheat menu: starting a yawn failed, it yawns when it can: {ex.Message}");
+        }
     }
 
     /// <summary>Dervishes near the player that this game runs spin a cyclone as soon as they can.</summary>

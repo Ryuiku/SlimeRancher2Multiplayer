@@ -106,7 +106,7 @@ internal enum PacketType : byte
     TeleporterLink = 112,         // Both Ways                                    Low (manual)                          On a teleporter node establishing a destination link
     CannonFire = 116,             // Both Ways                                    Low (manual)                          On linked cannon firing
     InitialTeleporterLinks = 113, // Server -> Client                             Low (depends on join)                 Initial teleporter links on join
-    TornadoSpawn = 114,           // Server -> All Clients                        Low (depends on tornado count)        Host tornado spawn/despawn broadcast
+    TornadoSpawn = 114,           // Both Ways                                    Low (depends on tornado count)        Tornado state/despawn from the game that runs it (host relays), host hand-over to a client
     GordoSlimeReward = 115,       // Both Ways                                    Low                                   On a Gordo Slime's reward spawn
     Blueprints = 117,             // Both Ways                                    Low (manual)                          Gadget blueprints unlocked (on unlock, and all of them on join)
     InitialActorOwners = 118,     // Server -> Client                             Low (depends on join)                 Who simulates which actor, sent just before the initial actors
@@ -130,7 +130,8 @@ internal enum PacketType : byte
     DroneExtractionQueue = 131,   // Both Ways                                    Low (on extraction)                   A station's pending Quantum Cloud extraction items (absolute)
     PrismaDisruption = 132,       // Server -> Client                             Low (join, on change, every 2 min)    The host's Labyrinth disruption forecast, the only one any game runs on
     PrismaGroupUnlock = 133,      // Client -> Server                             Low (manual)                          A client unlocked a disruption forecast group; the host runs the unlock
-    CheatRequest = 134,           // Client -> Server                             Low (manual)                          A client's cheat menu weather or tornado request; the host runs it and shares the result
+    CheatRequest = 134,           // Client -> Server                             Low (manual)                          A client's cheat menu weather, tornado or garden request; the host runs it (or hands a tornado back) and shares the result
+    CheatRun = 135,               // Server -> All Clients                        Low (manual)                          Run your own part of a cheat (ranch gardens: grow the gardens you run, ripen the produce you run)
     SlimeStalk = 83,              // Both Ways                                    Low (on stalk step change)            A tabby's stalk step (crouch, pounce) and stealth, from its owner
     ApiCall = 253,                // Both Ways                                    Variable                              Backing for mod's api packets
     ReservedAcknowledge = 254,    // Both Ways                                    Very High                             For acknowledge packets

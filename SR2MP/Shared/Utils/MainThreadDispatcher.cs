@@ -98,6 +98,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             SrLogger.LogError($"Error sending the ranch area times: {ex}");
         }
 
+        // Auto-feeder schedules after this frame's feeding and catch-up
+        try
+        {
+            SR2MP.Shared.Managers.NetworkFeederSync.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending feeder schedules: {ex}");
+        }
+
         // Market prices on the host after a sale
         try
         {

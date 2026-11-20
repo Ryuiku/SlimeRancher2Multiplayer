@@ -2,6 +2,7 @@ using Il2CppMonomiPark.SlimeRancher.Weather;
 using Il2CppMonomiPark.SlimeRancher.World;
 using SR2MP.Packets.Utils;
 using SR2MP.Packets.World;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Server.Managers;
 
@@ -162,5 +163,8 @@ internal static class WeatherUpdateHelper
         {
             SrLogger.LogError($"Error in SendWeatherUpdate: {ex}");
         }
+
+        // The host's weather changed (or was sent again), so an open cheat menu shows it.
+        NetworkCheats.NotifyWeatherChanged();
     }
 }

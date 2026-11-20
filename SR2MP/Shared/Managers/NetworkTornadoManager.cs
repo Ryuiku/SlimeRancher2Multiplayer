@@ -32,6 +32,38 @@ internal static class NetworkTornadoManager
     private const float ResendSeconds = 5f;
     private static float nextResend;
 
+    // Host: tornados a client's game runs because the host has no colliders there (its player is not
+    // near): who runs it, and the last state it reported.
+    internal sealed class RelayedTornado
+    {
+        public IPEndPoint Owner = null!;
+        public TornadoSpawnPacket? State;
+        public double StateWorldTime;
+        public float GrantedAt;
+        public float ReportedAt;
+    }
+
+    internal static readonly Dictionary<int, RelayedTornado> RelayedTornados = new();
+
+    // A relayed tornado whose game has not reported it for this many real seconds has ended there
+    // (or that game never spawned it): it ends for everyone. Longer than the server's client timeout
+    // (30 s, checked every 5 s), so a player who timed out is removed first and OnClientRemoved can
+    // hand the tornado to the host.
+    private const float RelayTimeoutSeconds = 45f;
+
+    // Real seconds the host waits after its copy of a relayed tornado faded on its own before it makes a
+    // new one, since the host may have loaded the ground on that path by then.
+    private const float CopyRetrySeconds = 30f;
+    private static readonly Dictionary<int, float> CopyFadedAt = new();
+
+    // Client: tornados this game runs for everyone, by the host's id.
+    internal static readonly Dictionary<int, GameObject> OwnedTornados = new();
+
+    // Set around the Spawn call of a handed-over tornado; read by OnTornadoSpawn.
+    internal static int NextOwnedId;
+
+    private static float nextOwnerResend;
+
     internal struct PendingTornado
     {
         public Vector3 Position;
@@ -111,7 +143,8 @@ internal static class NetworkTornadoManager
         if (TryUpdateExisting(id, position, rotation, speed, spin, fadeInWorldSeconds))
             return;
 
-        var activity = EnsureActivity();
+        // The Prefab-checked activity first: the first one in memory can have no prefab.
+        var activity = NetworkCheats.TornadoActivity() ?? EnsureActivity();
         if (activity == null)
             return;
 
@@ -159,9 +192,11 @@ internal static class NetworkTornadoManager
         }
     }
 
+    // On the host, PendingTornados only holds tornados a client's game runs; the host spawns its own
+    // copy (spawner off) once its player comes near, as a client does.
     internal static void ClientTick()
     {
-        if (Main.Server.IsRunning || PendingTornados.Count == 0)
+        if (PendingTornados.Count == 0)
             return;
 
         List<int>? spawnedTornados = null;
@@ -191,7 +226,13 @@ internal static class NetworkTornadoManager
     
     internal static void HostTick()
     {
-        if (!Main.Server.IsRunning || HostTornados.Count == 0)
+        if (!Main.Server.IsRunning)
+            return;
+
+        ExpireRelays();
+        NoteFadedCopies();
+
+        if (HostTornados.Count == 0)
             return;
 
         // Gone, or fading out: the others fade their copies as soon as the host's starts to.
@@ -242,6 +283,29 @@ internal static class NetworkTornadoManager
 
                 Main.Server.SendToClient(CurrentState(pair.Key, pair.Value), client);
             }
+
+            // Tornados a client's game runs, from their last report with the time left aged since then.
+            var time = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+            foreach (var pair in RelayedTornados)
+            {
+                var state = pair.Value.State;
+                if (state == null || pair.Value.Owner.Equals(client))
+                    continue;
+
+                var fade = state.FadeInWorldSeconds;
+                if (fade > 0d && time)
+                    fade = System.Math.Max(1d, fade - (time!.WorldTime() - pair.Value.StateWorldTime));
+
+                Main.Server.SendToClient(new TornadoSpawnPacket
+                {
+                    TornadoId = pair.Key,
+                    Position = state.Position,
+                    Rotation = state.Rotation,
+                    Speed = state.Speed,
+                    Spin = state.Spin,
+                    FadeInWorldSeconds = fade,
+                }, client);
+            }
         }
         catch (Exception ex)
         {
@@ -249,7 +313,7 @@ internal static class NetworkTornadoManager
         }
     }
 
-    // The host copy's state as it is now: position, rotation, speed, spin and the world seconds it has left.
+    // The running copy's state as it is now: position, rotation, speed, spin and the world seconds it has left.
     private static TornadoSpawnPacket CurrentState(int id, GameObject tornado)
     {
         var mover = tornado.GetComponent<SlimenadoMoveSpiral>();
@@ -286,11 +350,30 @@ internal static class NetworkTornadoManager
             }
         }
         ClientTornados.Clear();
+
+        foreach (var own in OwnedTornados.Values)
+        {
+            try
+            {
+                if (own)
+                    FadeOut(own);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"ResetClientState: {ex.Message}");
+            }
+        }
+        OwnedTornados.Clear();
+        NextOwnedId = 0;
     }
 
     // Tornados the game spawned before the server started: register and announce them like OnTornadoSpawn does.
     internal static void RegisterExisting()
     {
+        // Left from an earlier session: relays and this game's copies of tornados another game ran.
+        // Faded first, so the search below does not take a leftover copy for a tornado of this game.
+        ForgetRelays();
+
         try
         {
             var known = new HashSet<int>();
@@ -341,6 +424,321 @@ internal static class NetworkTornadoManager
         }
 
         Destroyer.Destroy(tornado, "SR2MP.TornadoDespawn");
+    }
+
+    // ---------------------------------------------------------------- tornados a client's game runs
+
+    /// <summary>Host: the requesting player's game runs this tornado (the host has no colliders there).
+    /// The host gives it an id and passes on what that game reports.</summary>
+    internal static int GrantToRequester(IPEndPoint requester, Vector3 position, Quaternion rotation, float speed, float minHours)
+    {
+        var id = IncreaseId();
+        RelayedTornados[id] = new RelayedTornado { Owner = requester, GrantedAt = Time.unscaledTime };
+        Main.Server.SendToClient(new TornadoSpawnPacket
+        {
+            TornadoId = id,
+            Authority = true,
+            Position = position,
+            Rotation = rotation,
+            Speed = speed,
+            MinLifetimeHours = minHours,
+        }, requester);
+        return id;
+    }
+
+    /// <summary>Client: the host handed this tornado to this game. A real spawn, so OnTornadoSpawn.Postfix
+    /// turns its spawner on and applies the speed and lifetime, then RegisterOwned reports it.</summary>
+    internal static void SpawnOwned(TornadoSpawnPacket grant)
+    {
+        if (Main.Server.IsRunning || OwnedTornados.ContainsKey(grant.TornadoId))
+            return;
+
+        // The Prefab-checked activity: the first one in memory can have no prefab.
+        var activity = NetworkCheats.TornadoActivity() ?? EnsureActivity();
+        GameObject? tornado = null;
+        if (activity != null)
+        {
+            NextOwnedId = grant.TornadoId;
+            NextSpeed = grant.Speed;
+            NextMinLifetimeHours = grant.MinLifetimeHours;
+            try
+            {
+                tornado = activity.Spawn(grant.Position, grant.Rotation);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"SpawnOwned: {ex.Message}");
+            }
+            finally
+            {
+                NextOwnedId = 0;
+                NextSpeed = -1f;
+                NextMinLifetimeHours = 0f;
+            }
+        }
+
+        if (!tornado || !OwnedTornados.ContainsKey(grant.TornadoId))
+        {
+            try
+            {
+                if (tornado)
+                    FadeOut(tornado!);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"SpawnOwned fade: {ex.Message}");
+            }
+            Main.Client.SendPacket(new TornadoSpawnPacket { TornadoId = grant.TornadoId, Despawn = true });
+            SrLogger.LogWarning($"Tornado {grant.TornadoId}: the host handed it to this game, but the game made no tornado");
+            return;
+        }
+
+        SrLogger.LogMessage($"Tornado {grant.TornadoId}: the host is not near it, so this game runs it for everyone");
+    }
+
+    /// <summary>Client, from OnTornadoSpawn.Postfix: a handed-over tornado was spawned here.</summary>
+    internal static void RegisterOwned(int id, GameObject tornado)
+    {
+        OwnedTornados[id] = tornado;
+        var state = CurrentState(id, tornado);
+
+        // Start has not run yet, so the others' Start gives their copies the same start value.
+        state.Spin = -1f;
+        Main.Client.SendPacket(state);
+        nextOwnerResend = Time.unscaledTime + ResendSeconds;
+    }
+
+    /// <summary>Client: like HostTick, for the tornados this game runs for everyone.</summary>
+    internal static void OwnerTick()
+    {
+        if (Main.Server.IsRunning || !Main.Client.IsConnected || OwnedTornados.Count == 0)
+            return;
+
+        List<int>? ended = null;
+        foreach (var pair in OwnedTornados)
+        {
+            if (IsGoneOrFading(pair.Value) || HasStalled(pair.Value))
+                (ended ??= new List<int>()).Add(pair.Key);
+        }
+
+        if (ended != null)
+        {
+            foreach (var id in ended)
+            {
+                if (OwnedTornados.Remove(id, out var go) && go)
+                {
+                    try { FadeOut(go); }
+                    catch (Exception ex) { SrLogger.LogDebug($"OwnerTick fade: {ex.Message}"); }
+                }
+                Main.Client.SendPacket(new TornadoSpawnPacket { TornadoId = id, Despawn = true });
+            }
+        }
+
+        var now = Time.unscaledTime;
+        if (OwnedTornados.Count == 0 || now < nextOwnerResend)
+            return;
+
+        nextOwnerResend = now + ResendSeconds;
+        foreach (var pair in OwnedTornados)
+            Main.Client.SendPacket(CurrentState(pair.Key, pair.Value));
+    }
+
+    // Its region went to sleep here (this player left it): the game no longer moves it, and it would
+    // hang still for the others.
+    private static bool HasStalled(GameObject tornado)
+    {
+        if (!tornado.activeInHierarchy)
+            return true;
+
+        var vortexer = tornado.GetComponent<ActorVortexer>();
+        var time = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+        return vortexer && time && vortexer!._fadeAtGameTime > 0d && time!.HasReached(vortexer._fadeAtGameTime);
+    }
+
+    // A copy's state from the game that runs the tornado. Used by the clients and by the host for its
+    // own copies of tornados a client's game runs.
+    internal static void ApplyCopyState(TornadoSpawnPacket packet)
+    {
+        if (TryUpdateExisting(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds))
+        {
+            PendingTornados.Remove(packet.TornadoId);
+            return;
+        }
+
+        if (PlayerInDistance(packet.Position))
+        {
+            PendingTornados.Remove(packet.TornadoId);
+            SpawnTornado(packet.TornadoId, packet.Position, packet.Rotation, packet.Speed, packet.Spin, packet.FadeInWorldSeconds);
+            return;
+        }
+
+        PendingTornados[packet.TornadoId] = new PendingTornado
+        {
+            Position = packet.Position,
+            Rotation = packet.Rotation,
+            Speed = packet.Speed,
+            Spin = packet.Spin,
+            FadeInWorldSeconds = packet.FadeInWorldSeconds,
+            ReceivedAt = Time.unscaledTime,
+        };
+    }
+
+    // Fades this game's copy of the tornado the way the game ends one.
+    internal static void ApplyDespawn(int id)
+    {
+        CopyFadedAt.Remove(id);
+        PendingTornados.Remove(id);
+        if (!ClientTornados.Remove(id, out var existing))
+            return;
+
+        try
+        {
+            if (existing)
+                FadeOut(existing);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Tornado {id} despawn: {ex.Message}");
+        }
+    }
+
+    /// <summary>Host: a TornadoSpawnPacket from a client. Only the game that runs a tornado may report
+    /// it. True passes it on to everyone else.</summary>
+    internal static bool HandleFromClient(TornadoSpawnPacket packet, IPEndPoint sender)
+    {
+        if (!RelayedTornados.TryGetValue(packet.TornadoId, out var relayed) || !relayed.Owner.Equals(sender))
+            return false;
+
+        packet.Authority = false;
+
+        if (packet.Despawn)
+        {
+            RelayedTornados.Remove(packet.TornadoId);
+            ApplyDespawn(packet.TornadoId);
+            return true;
+        }
+
+        var time = SceneContext.Instance ? SceneContext.Instance.TimeDirector : null;
+        relayed.State = packet;
+        relayed.StateWorldTime = time ? time!.WorldTime() : 0d;
+        relayed.ReportedAt = Time.unscaledTime;
+
+        // The host's own copy faded on its own: its ground or obstacle checks failed here, so this game had
+        // no colliders on that path (often because that ground was not loaded yet). A new copy right away
+        // would only fade again, so the reports are just passed on until a cooldown has passed. A copy
+        // destroyed under the host (its scene unloaded) is made again as soon as the host is near.
+        if (ClientTornados.TryGetValue(packet.TornadoId, out var copy) && IsGoneOrFading(copy))
+        {
+            // HostTick notes the fade when it starts, since the copy may already be destroyed by this report.
+            var now = Time.unscaledTime;
+            if (copy && !CopyFadedAt.ContainsKey(packet.TornadoId))
+                CopyFadedAt[packet.TornadoId] = now;
+            if (CopyFadedAt.TryGetValue(packet.TornadoId, out var fadedAt) && now - fadedAt < CopyRetrySeconds)
+                return true;
+
+            // The fading copy left out of the list still finishes its fade and destroys itself.
+            CopyFadedAt.Remove(packet.TornadoId);
+            ClientTornados.Remove(packet.TornadoId);
+        }
+
+        // The host's own copy, once its player is near (ClientTick).
+        ApplyCopyState(packet);
+        return true;
+    }
+
+    // Host: notes when its copy of a relayed tornado starts to fade on its own. The copy destroys itself
+    // once the fade is over, often before the owner's next report, and HandleFromClient must still know
+    // it faded rather than went away with its scene.
+    private static void NoteFadedCopies()
+    {
+        if (RelayedTornados.Count == 0 || ClientTornados.Count == 0)
+            return;
+
+        foreach (var id in RelayedTornados.Keys)
+        {
+            if (!CopyFadedAt.ContainsKey(id) && ClientTornados.TryGetValue(id, out var copy) && copy
+                && IsGoneOrFading(copy))
+                CopyFadedAt[id] = Time.unscaledTime;
+        }
+    }
+
+    // Host: a relayed tornado whose game stopped reporting it (or never did) ends for everyone.
+    private static void ExpireRelays()
+    {
+        if (RelayedTornados.Count == 0)
+            return;
+
+        var now = Time.unscaledTime;
+        List<int>? stale = null;
+        foreach (var pair in RelayedTornados)
+        {
+            var last = pair.Value.State == null ? pair.Value.GrantedAt : pair.Value.ReportedAt;
+            if (now - last > RelayTimeoutSeconds)
+                (stale ??= new List<int>()).Add(pair.Key);
+        }
+
+        if (stale == null)
+            return;
+
+        foreach (var id in stale)
+        {
+            RelayedTornados.Remove(id);
+            ApplyDespawn(id);
+            Main.Server.SendToAll(new TornadoSpawnPacket { TornadoId = id, Despawn = true });
+            SrLogger.LogMessage($"Tornado {id}: the game running it stopped reporting it, so it ends for everyone");
+        }
+    }
+
+    /// <summary>Host: a player left. The host takes over the tornados that player's game ran when it has
+    /// its own copy near its player; the rest end for everyone.</summary>
+    internal static void OnClientRemoved(IPEndPoint endPoint)
+    {
+        if (RelayedTornados.Count == 0)
+            return;
+
+        var orphaned = RelayedTornados.Where(pair => pair.Value.Owner.Equals(endPoint)).Select(pair => pair.Key).ToList();
+        foreach (var id in orphaned)
+        {
+            RelayedTornados.Remove(id);
+            PendingTornados.Remove(id);
+            CopyFadedAt.Remove(id);
+
+            if (ClientTornados.Remove(id, out var copy) && copy && !IsGoneOrFading(copy)
+                && PlayerInDistance(copy.transform.position))
+            {
+                // The copy has the same id on every game, so HostTick's resends keep the others' copies.
+                var spawner = copy.GetComponent<PeriodicActorSpawner>();
+                if (spawner)
+                    spawner!.enabled = true;
+                HostTornados[id] = copy;
+                SrLogger.LogMessage($"Tornado {id}: the player running it left, so the host runs it now");
+                continue;
+            }
+
+            try
+            {
+                if (copy)
+                    FadeOut(copy);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"OnClientRemoved: {ex.Message}");
+            }
+            Main.Server.SendToAll(new TornadoSpawnPacket { TornadoId = id, Despawn = true });
+        }
+    }
+
+    /// <summary>Host, when the server stops: nobody runs the relayed tornados any more, so the host's
+    /// copies of them fade.</summary>
+    internal static void OnServerStopped() => ForgetRelays();
+
+    private static void ForgetRelays()
+    {
+        RelayedTornados.Clear();
+        CopyFadedAt.Clear();
+
+        // Fades every copy this game has of a tornado another game ran, and forgets pending ones.
+        ResetClientState();
     }
 
     private static SpawnTornadoActivity? EnsureActivity()

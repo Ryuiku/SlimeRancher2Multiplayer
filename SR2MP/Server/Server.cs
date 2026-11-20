@@ -182,6 +182,17 @@ public sealed class SR2MPServer
 
     private void HandleClientRemoved(ClientInfo client)
     {
+        // Before the early return below: a player who left on purpose is already gone, but the tornados
+        // their game ran still need the host to take them over or end them.
+        try
+        {
+            SR2MP.Shared.Managers.NetworkTornadoManager.OnClientRemoved(client.EndPoint);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not hand over the tornados of a player who left: {ex.Message}");
+        }
+
         var playerId = client.PlayerId;
         
         var player = PlayerManager.GetPlayer(playerId);
@@ -299,6 +310,16 @@ public sealed class SR2MPServer
             ClientManager.Clear();
             PlayerManager.Clear();
             SR2MP.Shared.Managers.PlayerCosmeticsManager.Clear();
+
+            // Nobody runs the tornados the clients' games ran any more.
+            try
+            {
+                SR2MP.Shared.Managers.NetworkTornadoManager.OnServerStopped();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not end the relayed tornados: {ex.Message}");
+            }
             NetworkManager.Stop();
 
             // Actors the other players were simulating are frozen here, and nobody will move them now.

@@ -12,7 +12,9 @@ internal static class OnTornadoSpawn
     {
         NetworkTornadoManager.LastActivity = __instance;
         
-        if (Main.Client.IsConnected && !Main.Server.IsRunning && !HandlingPacket)
+        // A client's own weather makes no tornados; the host's are shared. A tornado the host handed to
+        // this game (NextOwnedId) is spawned for real.
+        if (Main.Client.IsConnected && !Main.Server.IsRunning && !HandlingPacket && NetworkTornadoManager.NextOwnedId == 0)
             return false;
 
         return true;
@@ -49,8 +51,16 @@ internal static class OnTornadoSpawn
                 }
             }
 
-            if (!Main.Server.IsRunning || HandlingPacket)
+            if (HandlingPacket)
                 return;
+
+            if (!Main.Server.IsRunning)
+            {
+                // A client: the tornado the host handed to this game, reported from now on by OwnerTick.
+                if (NetworkTornadoManager.NextOwnedId != 0)
+                    NetworkTornadoManager.RegisterOwned(NetworkTornadoManager.NextOwnedId, __result);
+                return;
+            }
 
             var id = NetworkTornadoManager.IncreaseId();
             NetworkTornadoManager.HostTornados[id] = __result;

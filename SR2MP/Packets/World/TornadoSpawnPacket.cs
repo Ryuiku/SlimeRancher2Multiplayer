@@ -6,6 +6,13 @@ internal sealed class TornadoSpawnPacket : IPacket
 {
     public int TornadoId;
     public bool Despawn;
+
+    // Host to one client: "your game runs this tornado for everyone". It spawns it with its spawner on
+    // and reports its state back, which the host passes on.
+    public bool Authority;
+
+    // Hand-overs only: the least game hours it should last (the cheat's minimum).
+    public float MinLifetimeHours;
     public Vector3 Position;
     public Quaternion Rotation;
 
@@ -28,11 +35,14 @@ internal sealed class TornadoSpawnPacket : IPacket
         writer.WriteBool(Despawn);
         if (!Despawn)
         {
+            writer.WriteBool(Authority);
             writer.WriteVector3(Position);
             writer.WriteQuaternion(Rotation);
             writer.WriteFloat(Speed);
             writer.WriteFloat(Spin);
             writer.WriteDouble(FadeInWorldSeconds);
+            if (Authority)
+                writer.WriteFloat(MinLifetimeHours);
         }
     }
 
@@ -42,11 +52,14 @@ internal sealed class TornadoSpawnPacket : IPacket
         Despawn = reader.ReadBool();
         if (!Despawn)
         {
+            Authority = reader.ReadBool();
             Position = reader.ReadVector3();
             Rotation = reader.ReadQuaternion();
             Speed = reader.ReadFloat();
             Spin = reader.ReadFloat();
             FadeInWorldSeconds = reader.ReadDouble();
+            if (Authority)
+                MinLifetimeHours = reader.ReadFloat();
         }
     }
 }

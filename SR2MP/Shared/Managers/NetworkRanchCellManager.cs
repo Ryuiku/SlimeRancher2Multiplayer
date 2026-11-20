@@ -648,11 +648,12 @@ internal static class NetworkRanchCellManager
 
     /// <summary>
     /// True when another player's game drives the auto-feeders of the ranch area this region
-    /// belongs to. Unknown region or simulator: false (the game runs as usual).
+    /// belongs to. Unknown region or simulator: false (the game runs as usual). Also true while this
+    /// client holds the area's catch-up waiting for the host's answer.
     /// </summary>
     internal static bool IsOtherSimulator(Region? region)
     {
-        if (region == null || !InSession || Simulators.Count == 0)
+        if (region == null || !InSession || (Simulators.Count == 0 && Pending.Count == 0))
             return false;
 
         var pointer = region.Pointer;
@@ -668,12 +669,14 @@ internal static class NetworkRanchCellManager
             if (!CellByRegion.TryGetValue(pointer, out id))
             {
                 if (LoggedUnknownRegions.Add(pointer))
-                    SrLogger.LogDebug($"Auto-feeder region '{region.name}' belongs to no known ranch area; it runs on every game there");
+                    SrLogger.LogWarning($"Auto-feeder region '{region.name}' belongs to no known ranch area; it runs on every game there");
                 return false;
             }
         }
 
-        return IsOtherSimulator(id);
+        // While this client holds the area's catch-up it does not know yet who runs the feeders. Running
+        // them meanwhile would feed from the old schedule on top of the catch-up the host may be running.
+        return Pending.ContainsKey(id) || IsOtherSimulator(id);
     }
 
     private static bool IsOtherSimulator(string id)

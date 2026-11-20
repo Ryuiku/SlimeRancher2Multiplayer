@@ -23,6 +23,9 @@ internal sealed class AmmoAddHandler : BasePacketHandler<AmmoAddPacket>
         return true;
     }
 
+    // Storages already warned about, so a full silo does not fill the log.
+    private static readonly HashSet<string> LoggedNoSlot = new();
+
     private static void Apply(AmmoAddPacket packet)
     {
         var ammo = NetworkAmmoManager.GetAmmo(packet.ID);
@@ -43,7 +46,12 @@ internal sealed class AmmoAddHandler : BasePacketHandler<AmmoAddPacket>
         
         var slotIndex = ammo.GetNextSlot(ident);
         if (slotIndex == -1)
+        {
+            // The sender has already added it on its side, so the counts now differ until a resync.
+            if (LoggedNoSlot.Add(packet.ID ?? string.Empty))
+                SrLogger.LogWarning($"AmmoAdd: storage {packet.ID} has no slot for {ident.name}; the other player's count will differ");
             return;
+        }
 
         HandlingPacket = true;
         ammo.MaybeAddToSpecificSlot(new AmmoSlot.AmmoMetadata(ident), slotIndex, packet.Count, false);
