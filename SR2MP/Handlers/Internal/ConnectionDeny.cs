@@ -11,7 +11,13 @@ internal sealed class ConnectionDenyHandler : BasePacketHandler<ConnectionDenyPa
     protected override bool Handle(ConnectionDenyPacket packet, IPEndPoint? _)
     {
         Main.Client.UpdateConnectionStatus(false);
-        MultiplayerUI.Instance.RegisterSystemMessage("Connection was denied!",
+
+        // Show the host's reason (wrong version, missing mods) instead of a bare "denied".
+        var message = string.IsNullOrWhiteSpace(packet.Reason)
+            ? "Connection was denied!"
+            : $"Connection was denied! {packet.Reason}";
+        SrLogger.LogMessage(message);
+        MultiplayerUI.Instance.RegisterSystemMessage(message,
             $"SYSTEM_CONNECTION_DENY_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", MultiplayerUI.SystemMessageClose);
         return false;
     }

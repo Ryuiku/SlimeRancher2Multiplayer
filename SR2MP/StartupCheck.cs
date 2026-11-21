@@ -7,8 +7,10 @@ namespace SR2MP;
 internal static class StartupCheck
 {
     private const string RequiredGameVersion = BuildInfo.ExactGameVersion;
-    private const string VersionUrl = "https://raw.githubusercontent.com/pyeight/SlimeRancher2Multiplayer/refs/heads/master/latestModVersion.txt";
-    private const string DiscordUrl = BuildInfo.Discord;
+    // The Patched fork checks its own repository, so a new release of the original mod
+    // never tells players of this fork to "update" to a build that can't join them.
+    private const string VersionUrl = "https://raw.githubusercontent.com/Ryuiku/SlimeRancher2Multiplayer/refs/heads/master/latestModVersion.txt";
+    private const string ReleasesUrl = BuildInfo.Releases;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
@@ -149,32 +151,26 @@ internal static class StartupCheck
             const string currentModVersion = BuildInfo.Version;
             var latestVersion = (await client.GetStringAsync(VersionUrl)).Trim();
 
-            switch (CompareVersions(currentModVersion, latestVersion))
+            switch (CompareForkVersions(currentModVersion, latestVersion))
             {
                 case < 0:
+                    // A warning, not a forced quit: players can finish a session with friends
+                    // who haven't updated yet. Everyone in a session needs the same version.
                     ShowMessageBox(
-                        "Your SR2MP mod is outdated!\n\n" +
+                        "A newer version of Ranching Together (Patched) is available.\n\n" +
                         $"Your version: {currentModVersion}\n" +
                         $"Latest version: {latestVersion}\n\n" +
-                        "Click OK to join our Discord or get a new version from NexusMods.\n" +
-                        "The game will close after clicking OK.",
+                        "Click OK to open the download page.\n" +
+                        "Everyone in a multiplayer session needs the same version.",
                         "SR2MP – Update Available",
-                        MB_OK | MB_ICON_WARNING, true
+                        MB_OK | MB_ICON_WARNING, false
                     );
 
-                    OpenUrl(DiscordUrl);
-                    shouldQuit = true;
+                    OpenUrl(ReleasesUrl);
                     break;
 
                 case > 0:
-                    ShowMessageBox(
-                        "Your SR2MP mod version is newer than the latest release.\n\n" +
-                        $"Your version: {currentModVersion}\n" +
-                        $"Latest version: {latestVersion}\n\n" +
-                        "This version is not officially supported and may not work correctly.",
-                        "SR2MP – Unsupported Version",
-                        MB_OK | MB_ICON_WARNING, false
-                    );
+                    SrLogger.LogMessage($"SR2MP {currentModVersion} is newer than the latest release ({latestVersion})");
                     break;
             }
         }
@@ -190,6 +186,34 @@ internal static class StartupCheck
         {
             SrLogger.LogWarning($"Failed to check SR2MP version\n{ex}");
         }
+    }
+
+    /// <summary>
+    /// Compares versions of the form "0.3.9", "0.3.9-Patched" and "0.3.9-Patched.2".
+    /// The numeric part is compared first. For the same numeric part, no suffix is the original
+    /// release, "-Patched" is fork release 1 and "-Patched.N" is fork release N.
+    /// </summary>
+    internal static int CompareForkVersions(string version1, string version2)
+    {
+        var baseCompare = CompareVersions(StripPreReleaseSuffix(version1), StripPreReleaseSuffix(version2));
+        if (baseCompare != 0)
+            return baseCompare;
+
+        return ForkRelease(version1).CompareTo(ForkRelease(version2));
+    }
+
+    private static int ForkRelease(string version)
+    {
+        var separator = version.IndexOf('-');
+        if (separator < 0)
+            return 0;
+
+        var suffix = version[(separator + 1)..];
+        var dot = suffix.IndexOf('.');
+        if (dot < 0)
+            return 1;
+
+        return int.TryParse(suffix[(dot + 1)..], out var release) && release > 0 ? release : 1;
     }
 
     private static void ShowMessageBox(string text, string caption, uint type, bool error)

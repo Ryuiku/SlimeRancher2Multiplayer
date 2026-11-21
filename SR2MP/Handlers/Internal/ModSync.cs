@@ -23,6 +23,12 @@ internal sealed class ModSyncHandler : BasePacketHandler<EmptyPacket>
             };
         }
 
+        dict[ModSyncPacket.SelfVersionKey] = new ModData
+        {
+            Name = BuildInfo.Name,
+            Version = BuildInfo.Version
+        };
+
         var modSyncPacket = new ModSyncPacket
         {
             PlayerId = LocalID,
