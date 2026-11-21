@@ -39,8 +39,15 @@ internal static class OnGameLoadPatch
 
             var transform = actor.value.Transform;
 
+            // In a zone that isn't loaded here (the host hasn't been there since loading the
+            // save): no object yet, but it still belongs in the world a joining player gets.
+            // Without this, a joiner saw none of those slimes until a resync after the host went there.
             if (!transform)
+            {
+                if (actor.value.TryCast<GadgetModel>() == null)
+                    ActorManager.Actors[actor.value.actorId.Value] = actor.value;
                 continue;
+            }
             
             var networkComponent = transform.GetComponent<NetworkActor>();
 

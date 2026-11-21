@@ -5,8 +5,9 @@
 ## What's fixed in 0.3.9-Patched.2
 - **Host sent to the main menu when entering the Sanctuary** ("An error occurred"). A plot's storage could be saved with more slots than the plot has. Saves that already have this now load again, and the cause is fixed.
 - **Players stuck when the host's game closes or hangs.** If a player hears nothing from the host for 30 seconds, they now leave the world with a message instead of waiting forever.
+- **Slimes missing after joining until a resync**, for example in the Sanctuary when the host hadn't been there yet. Only the host needs this build for it.
 - **Join code not working for players on the host's own network.** The joining game now recognizes the host's network more reliably and stays on it. The host's window also shows a "Same network" IP and port for Manual join.
-- **Better bug reports:** if the game stops responding during multiplayer, the log now says what it was busy with.
+- **Better bug reports:** if the game stops responding during multiplayer, the log now says what it was busy with, and a "Stutter report" line once a minute says whether stutters came from the mod or the game.
 
 Everything else is in the [changelog](https://github.com/Ryuiku/SlimeRancher2Multiplayer/blob/master/CHANGELOG.md).
 
@@ -19,6 +20,6 @@ Needs Slime Rancher 2 **1.3.0**, **MelonLoader 0.7.3** and **[Starlight 4.0.4](h
 
 Everyone in a session needs this same version. Joining a host replaces the save you join with, so join with an empty save.
 
-`SR2MP.dll` sha256: `d30d580779816b660ce6834ebbb19ff9845f2048c994e85c35321ce23c8a5980`
+`SR2MP.dll` sha256: `d00bfc0e3efc8ad458e9f8dd5cb8799cd9b1882b85ced383622bd373730cbe09`
 
 Questions or bugs: [open an issue on this fork](https://github.com/Ryuiku/SlimeRancher2Multiplayer/issues). Source code: this repository (GPLv3, like the original).
