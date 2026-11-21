@@ -249,7 +249,7 @@ internal static class AutoHost
         !ip.Equals(IPAddress.IPv6Any) &&
         !ip.Equals(IPAddress.Loopback);
 
-    private static IPAddress? TryGetExternalIp()
+    internal static IPAddress? TryGetExternalIp()
     {
         try
         {

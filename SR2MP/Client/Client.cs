@@ -45,6 +45,15 @@ public sealed class SR2MPClient
     /// </summary>
     internal IPEndPoint? FallbackEndPoint;
 
+    /// <summary>
+    /// True once the host's LAN address from a join code gave up and the public address was tried.
+    /// Only used to explain a failed join.
+    /// </summary>
+    internal volatile bool LanAttemptFailed;
+
+    // Anything at all came back from the address of the current attempt.
+    private volatile bool heardFromHostThisAttempt;
+
     // Goes up every time a connection is started or torn down. A receive thread, timer or queued
     // action that belongs to an older connection compares it and does nothing.
     private int connectionGeneration;
@@ -138,6 +147,7 @@ public sealed class SR2MPClient
         {
             var generation = Interlocked.Increment(ref connectionGeneration);
             var parsedIp = IPAddress.Parse(serverIp);
+            heardFromHostThisAttempt = false;
 
             if (parsedIp.AddressFamily == AddressFamily.InterNetworkV6)
             {
@@ -253,6 +263,24 @@ public sealed class SR2MPClient
         if (connectionAcknowledged || !isConnected)
             return;
 
+        // The host answered on its LAN address but has not let us in yet (a busy host can take a
+        // few seconds). It is reachable here, so stay and give it the normal time instead of
+        // switching to the public address, which many routers can't reach from inside.
+        if (heardFromHostThisAttempt && Interlocked.Exchange(ref FallbackEndPoint, null) != null)
+        {
+            SrLogger.LogMessage("The host answered on the local network, waiting for it to let you in...");
+            try
+            {
+                connectionTimeoutTimer?.Change(TimeSpan.FromSeconds(ConnectionTimeoutSeconds), Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The attempt ended in the meantime.
+            }
+
+            return;
+        }
+
         if (TryStartFallback(generation, "did not answer"))
             return;
 
@@ -261,8 +289,13 @@ public sealed class SR2MPClient
 
         SrLogger.LogError("Connection timeout: Server did not respond in time");
 
+        var message = LanAttemptFailed
+            ? "Could not reach the host on your network or over the internet. If you are on the host's network, " +
+              "use Manual join with the \"same network\" address shown on the host's screen."
+            : "The host did not answer. Check the join code (or IP and port), and that the host's server is running.";
+
         isConnecting = false;
-        DisconnectOnMainThread(generation, null);
+        DisconnectOnMainThread(generation, message);
     }
 
     private void CheckHostSilence(object? state)
@@ -316,6 +349,7 @@ public sealed class SR2MPClient
             return false;
 
         connectionTimeoutTimer?.Dispose();
+        LanAttemptFailed = true;
 
         SrLogger.LogWarning("Host did not answer on the local network, trying their public address...",
             $"LAN address {reason}, falling back to {fallback}");
@@ -403,6 +437,8 @@ public sealed class SR2MPClient
                     // This connection was replaced while we were waiting.
                     if (!IsCurrentConnection(generation))
                         break;
+
+                    heardFromHostThisAttempt = true;
 
                     // Acknowledgements come from the host's network thread even when its game has
                     // hung, so they don't count as hearing from the host.

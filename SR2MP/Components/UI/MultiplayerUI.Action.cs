@@ -18,6 +18,9 @@ internal sealed partial class MultiplayerUI
 
         MenuEUtil.CloseOpenMenu();
         Main.Server.Start(port, true);
+
+        // Shown under the join code: players on the host's own network can always type this in.
+        hostLanAddress = JoinCode.GetLocalLanAddress()?.ToString() ?? string.Empty;
         Main.SetConfigValue("host_port", hostLocalPortInput);
     }
 
@@ -94,6 +97,7 @@ internal sealed partial class MultiplayerUI
         ip = ResolveIp(ip);
 
         Main.Client.FallbackEndPoint = null;
+        Main.Client.LanAttemptFailed = false;
         Main.Client.Connect(ip, port);
 
         Main.SetConfigValue("recent_ip", joinIpInput);
@@ -113,23 +117,64 @@ internal sealed partial class MultiplayerUI
         joinIpInput = address.ToString();
         joinPortInput = port.ToString();
 
-        // On the host's home network, connect to their LAN address first: most routers can't
-        // connect to their own public IP. If that doesn't answer, fall back to the public address.
-        if (lanEndPoint != null && JoinCode.IsOnSameLan(lanEndPoint.Address))
+        if (lanEndPoint == null)
         {
-            SrLogger.LogMessage("Trying the host's local network address first...",
-                $"Join code: trying LAN {lanEndPoint} before {address}:{port}");
-
-            MenuEUtil.CloseOpenMenu();
-            Main.Client.FallbackEndPoint = new IPEndPoint(address, port);
-            Main.Client.Connect(lanEndPoint.Address.ToString(), lanEndPoint.Port, SR2MP.Client.SR2MPClient.LanConnectionTimeoutSeconds);
-
-            Main.SetConfigValue("recent_ip", joinIpInput);
-            Main.SetConfigValue("recent_port", joinPortInput);
+            Connect(joinIpInput, port);
             return;
         }
 
-        Connect(joinIpInput, port);
+        // On the host's home network, connect to their LAN address first: most routers can't
+        // connect to their own public IP. If that doesn't answer, fall back to the public address.
+        if (JoinCode.IsOnSameLan(lanEndPoint.Address))
+        {
+            ConnectLanFirst(lanEndPoint, new IPEndPoint(address, port), "it is on one of your networks");
+            return;
+        }
+
+        // The subnet check can miss (mesh Wi-Fi, a VPN in the way). Sharing the host's public
+        // address means sharing their router, so ask the internet which address we have.
+        if (joinCodeChecking)
+            return;
+
+        joinCodeChecking = true;
+        joinCodeError = "Checking your network...";
+
+        var publicEndPoint = new IPEndPoint(address, port);
+        Task.Run(() =>
+        {
+            var ownPublicIp = AutoHost.TryGetExternalIp();
+            var sameRouter = ownPublicIp != null && ownPublicIp.Equals(address);
+
+            MainThreadDispatcher.Instance.Enqueue(() =>
+            {
+                joinCodeChecking = false;
+                joinCodeError = string.Empty;
+
+                if (Main.Client.IsConnected || Main.Client.IsConnecting || Main.Server.IsRunning)
+                    return;
+
+                if (sameRouter)
+                    ConnectLanFirst(lanEndPoint, publicEndPoint, "you share the host's public address");
+                else
+                    Connect(publicEndPoint.Address.ToString(), (ushort)publicEndPoint.Port);
+            });
+        });
+    }
+
+    private bool joinCodeChecking;
+
+    private void ConnectLanFirst(IPEndPoint lanEndPoint, IPEndPoint publicEndPoint, string why)
+    {
+        SrLogger.LogMessage("Trying the host's local network address first...",
+            $"Join code: trying LAN {lanEndPoint} before {publicEndPoint} ({why})");
+
+        MenuEUtil.CloseOpenMenu();
+        Main.Client.FallbackEndPoint = publicEndPoint;
+        Main.Client.LanAttemptFailed = false;
+        Main.Client.Connect(lanEndPoint.Address.ToString(), lanEndPoint.Port, SR2MP.Client.SR2MPClient.LanConnectionTimeoutSeconds);
+
+        Main.SetConfigValue("recent_ip", joinIpInput);
+        Main.SetConfigValue("recent_port", joinPortInput);
     }
 
     private void TryJoinManual(string ip, ushort port)
