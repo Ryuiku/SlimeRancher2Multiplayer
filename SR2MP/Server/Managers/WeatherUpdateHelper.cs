@@ -2,74 +2,51 @@ using Il2CppMonomiPark.SlimeRancher.Weather;
 using Il2CppMonomiPark.SlimeRancher.World;
 using SR2MP.Packets.Utils;
 using SR2MP.Packets.World;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Server.Managers;
 
 internal static class WeatherUpdateHelper
 {
     private static bool lookupInitialized;
-    private static readonly Dictionary<string, WeatherPatternDefinition> WeatherPatternsFromStateNames = new();
-    private static readonly Dictionary<ZoneDefinition, Dictionary<string, WeatherPatternDefinition>> WeatherPatternsByZone = new();
+
+    // Every weather pattern the zone configs know, by asset name. The host sends each forecast
+    // entry's pattern by name, so the client resolves exactly the host's pattern.
+    private static readonly Dictionary<string, WeatherPatternDefinition> PatternsByName = new();
+
+    // A pattern that could not be resolved is logged once per zone/state/pattern, not every update.
+    private static readonly HashSet<string> LoggedMisses = new();
 
     private static void CreateWeatherPatternLookup(WeatherRegistry registry)
     {
-        if (registry == null)
-        {
-            SrLogger.LogError("WeatherRegistry is null in InitializeWeatherPatternLookup");
-            return;
-        }
-
         try
         {
-            WeatherPatternsFromStateNames.Clear();
-            WeatherPatternsByZone.Clear();
+            PatternsByName.Clear();
 
             if (registry.ZoneConfigList == null)
             {
-                SrLogger.LogError("WeatherRegistry.ZoneConfigList is null");
+                SrLogger.LogDebug("WeatherRegistry.ZoneConfigList is null");
                 return;
             }
 
             foreach (var config in registry.ZoneConfigList)
             {
-                if (!config || !config.Zone || config.Patterns == null)
-                {
-                    SrLogger.LogPacketSize("Skipping null weather config or patterns");
+                if (!config || config.Patterns == null)
                     continue;
-                }
-
-                var zonePatternMap = new Dictionary<string, WeatherPatternDefinition>();
 
                 foreach (var pattern in config.Patterns)
                 {
-                    if (!pattern || pattern._stateList == null)
-                    {
-                        SrLogger.LogPacketSize($"Skipping null pattern or state list in zone {config.Zone.name}");
-                        continue;
-                    }
-
-                    foreach (var state in pattern._stateList)
-                    {
-                        if (!state || string.IsNullOrEmpty(state.name))
-                        {
-                            SrLogger.LogPacketSize($"Skipping null state or state name in pattern {pattern.name}");
-                            continue;
-                        }
-
-                        zonePatternMap[state.name] = pattern;
-                        WeatherPatternsFromStateNames.TryAdd(state.name, pattern);
-                    }
+                    if (pattern && !string.IsNullOrEmpty(pattern.name))
+                        PatternsByName.TryAdd(pattern.name, pattern);
                 }
-
-                WeatherPatternsByZone[config.Zone] = zonePatternMap;
             }
 
-            lookupInitialized = true;
-            SrLogger.LogPacketSize($"Weather pattern lookup initialized with {WeatherPatternsFromStateNames.Count} states");
+            lookupInitialized = PatternsByName.Count > 0;
+            SrLogger.LogDebug($"Weather pattern lookup initialized with {PatternsByName.Count} patterns");
         }
         catch (Exception ex)
         {
-            SrLogger.LogError($"Error in InitializeWeatherPatternLookup: {ex}");
+            SrLogger.LogError($"Error in CreateWeatherPatternLookup: {ex}");
             lookupInitialized = false;
         }
     }
@@ -81,15 +58,11 @@ internal static class WeatherUpdateHelper
 
         try
         {
-            var registry = SceneContext.Instance.WeatherRegistry;
-
+            var registry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
             if (!registry)
-            {
-                SrLogger.LogError("Could not find WeatherRegistry in scene");
                 return;
-            }
 
-            CreateWeatherPatternLookup(registry);
+            CreateWeatherPatternLookup(registry!);
         }
         catch (Exception ex)
         {
@@ -97,51 +70,75 @@ internal static class WeatherUpdateHelper
         }
     }
 
-    public static WeatherPatternDefinition GetPatternForZoneAndState(
-        ZoneDefinition? zone,
-        string stateName)
+    /// <summary>
+    /// Client: the pattern of one of the host's forecast entries. By the name the host sent, first
+    /// among the zone's own patterns, then any pattern the game has; only when the name is unknown,
+    /// the zone's own pattern that contains the state. Never another zone's pattern by state.
+    /// </summary>
+    public static WeatherPatternDefinition? ResolvePattern(
+        ZoneDefinition zoneKey,
+        WeatherRegistry.ZoneWeatherData zone,
+        string? patternName,
+        WeatherStateDefinition state)
     {
         EnsureLookupInitialized();
 
-        if (!lookupInitialized)
-        {
-            SrLogger.LogWarning("Weather pattern lookup not initialized");
-            return null!;
-        }
+        var zonePatterns = zone.Config ? zone.Config.Patterns : null;
 
-        if (zone == null)
+        if (!string.IsNullOrEmpty(patternName))
         {
-            SrLogger.LogPacketSize($"Invalid zone: state={stateName}");
-            return null!;
-        }
-
-        if (string.IsNullOrEmpty(stateName))
-        {
-            SrLogger.LogPacketSize($"Invalid state name: zone={zone.name}, state={stateName}");
-            return null!;
-        }
-
-        if (WeatherPatternsByZone.TryGetValue(zone, out var zoneMap))
-        {
-            if (zoneMap.TryGetValue(stateName, out var pattern))
+            if (zonePatterns != null)
             {
-                return pattern;
+                foreach (var pattern in zonePatterns)
+                {
+                    if (pattern && pattern.name == patternName)
+                        return pattern;
+                }
+            }
+
+            if (PatternsByName.TryGetValue(patternName!, out var known) && known)
+                return known;
+
+            foreach (var pattern in Resources.FindObjectsOfTypeAll<WeatherPatternDefinition>())
+            {
+                if (pattern && pattern.name == patternName)
+                {
+                    PatternsByName[patternName!] = pattern;
+                    return pattern;
+                }
             }
         }
 
-        if (WeatherPatternsFromStateNames.TryGetValue(stateName, out var fallbackPattern))
+        if (zonePatterns != null)
         {
-            SrLogger.LogWarning(
-                $"Using fallback pattern for {zone.name} / {stateName}: {fallbackPattern.name}"
-            );
-            return fallbackPattern;
+            var asState = state.Cast<IWeatherState>();
+            foreach (var pattern in zonePatterns)
+            {
+                try
+                {
+                    if (pattern && pattern.ContainsState(asState))
+                    {
+                        LogMissOnce(zoneKey, state, patternName,
+                            $"Weather: pattern '{patternName}' from the host is unknown here, using {zoneKey.name}'s own '{pattern.name}' for {state.name}");
+                        return pattern;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogDebug($"Weather: ContainsState failed on {pattern?.name}: {ex.Message}");
+                }
+            }
         }
 
-        SrLogger.LogPacketSize(
-            $"No pattern found for zone {zone.name} / state {stateName}"
-        );
+        LogMissOnce(zoneKey, state, patternName,
+            $"Weather: no pattern for {zoneKey.name} / {state.name} (host sent '{patternName}'); the entry is left off the map");
+        return null;
+    }
 
-        return null!;
+    private static void LogMissOnce(ZoneDefinition zoneKey, WeatherStateDefinition state, string? patternName, string message)
+    {
+        if (LoggedMisses.Add($"{zoneKey.name}|{state.name}|{patternName}"))
+            SrLogger.LogWarning(message);
     }
 
     public static void SendWeatherUpdate()
@@ -151,26 +148,23 @@ internal static class WeatherUpdateHelper
 
         try
         {
-            var weatherRegistry = SceneContext.Instance.WeatherRegistry;
+            var weatherRegistry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
 
-            if (!weatherRegistry)
+            if (!weatherRegistry || weatherRegistry!._zones == null)
             {
-                SrLogger.LogError("Could not find WeatherRegistry!");
+                SrLogger.LogDebug("SendWeatherUpdate: no weather registry yet");
                 return;
             }
 
-            if (weatherRegistry._model == null)
-            {
-                SrLogger.LogError("Could not find WeatherRegistry._model!");
-                return;
-            }
-
-            var packet = WeatherPacket.CreateFromModel(weatherRegistry._model, PacketType.WeatherUpdate);
+            var packet = WeatherPacket.CreateFromRegistry(weatherRegistry, PacketType.WeatherUpdate);
             Main.Server.SendToAll(packet);
         }
         catch (Exception ex)
         {
             SrLogger.LogError($"Error in SendWeatherUpdate: {ex}");
         }
+
+        // The host's weather changed (or was sent again), so an open cheat menu shows it.
+        NetworkCheats.NotifyWeatherChanged();
     }
 }

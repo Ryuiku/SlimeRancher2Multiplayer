@@ -2,6 +2,7 @@ using System.Collections;
 using Il2CppMonomiPark.SlimeRancher.DataModel;
 using Il2CppMonomiPark.SlimeRancher.Drone;
 using SR2MP.Components.Drone;
+using SR2MP.Packets.Drone;
 using SR2MP.Packets.Loading;
 
 namespace SR2MP.Shared.Managers;
@@ -226,5 +227,38 @@ internal static partial class NetworkDroneManager
         }
 
         HandlingPacket = false;
+    }
+
+    /// <summary>
+    /// A drone update for a drone that is not loaded here (for example the host is in another zone
+    /// while a client works at the ranch). Its position, carried items and at-station flag go into
+    /// the models, so this game's save, the join snapshot and a rehost hold what the owner sees.
+    /// </summary>
+    internal static void ApplyUpdateToModel(DroneUpdatePacket packet)
+    {
+        var id = new ActorId(packet.StationId);
+        var allDrones = GameState.droneModel;
+
+        if (allDrones.TryGetRanchDroneByStationId(id, out var ranchModel) && ranchModel != null)
+        {
+            ranchModel.lastPosition = packet.Position;
+            ranchModel.lastRotation = packet.Rotation;
+
+            // Updates come often; the slots are only written when the carried items changed.
+            if (packet.Ammo != null && ranchModel.Ammo != null &&
+                GetAmmoHash(packet.Ammo) != GetAmmoHash(CreateDroneAmmo(ranchModel)))
+            {
+                ApplyAmmoToModel(ranchModel.Ammo, packet.Ammo);
+            }
+        }
+        else if (allDrones.TryGetExplorerDroneByStationId(id, out var explorerModel) && explorerModel != null)
+        {
+            explorerModel.lastPosition = packet.Position;
+            explorerModel.lastRotation = packet.Rotation;
+        }
+
+        var stationModel = GameState.GetIdentifiableModel(id)?.TryCast<DroneStationGadgetModel>();
+        if (stationModel != null && stationModel._isDroneAtStation != packet.AtStation)
+            stationModel.IsDroneAtStation._value = packet.AtStation;
     }
 }

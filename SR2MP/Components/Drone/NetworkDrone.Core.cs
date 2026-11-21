@@ -257,6 +257,31 @@ internal sealed partial class NetworkDrone : MonoBehaviour
     [UsedImplicitly]
     public void OnDestroy()
     {
+        // The owner's zone unloaded (or the drone went away) without a hibernation first. Send the
+        // last position and items, and let go of the drone, otherwise the others keep thinking this
+        // game runs it and nobody does. Replacements made by the mod itself run under HandlingPacket
+        // and are skipped.
+        if (registered && LocallyOwned && !HandlingPacket && stationId != 0 &&
+            (Main.Server.IsRunning || Main.Client.IsConnected))
+        {
+            try
+            {
+                if (DevMode)
+                    SrLogger.LogMessage($"Drone {stationId}: destroyed while owned here, releasing it");
+
+                try { SendUpdate(true); }
+                catch (Exception ex) { SrLogger.LogDebug($"Drone {stationId}: final update failed: {ex.Message}"); }
+
+                LocallyOwned = false;
+                SendOwnershipPacket(string.Empty, CurrentOwnerId);
+                NetworkDroneManager.CachedOwners[stationId] = string.Empty;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Drone {stationId}: release on destroy failed: {ex.Message}");
+            }
+        }
+
         if (registered && Drones.TryGetValue(stationId, out var drone) && drone == this)
             Drones.Remove(stationId);
     }

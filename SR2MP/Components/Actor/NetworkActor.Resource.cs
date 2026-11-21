@@ -14,6 +14,14 @@ internal sealed partial class NetworkActor
     // causes problems on gaining ownership if the cache does not update
     internal static bool IsResourceFrozen(double progress) => progress > 1e300 || double.IsInfinity(progress);
 
+    // The last real state and progress this game was given for the produce (non-owners freeze the model's own progressTime).
+    internal bool TryGetKnownResourceState(out ResourceCycle.State state, out double progress)
+    {
+        state = knownResourceState;
+        progress = knownProgressTime;
+        return hasKnownResourceState && !IsResourceFrozen(knownProgressTime);
+    }
+
     internal bool IsRotten => isResource && cycle?._model != null && cycle._model.state == ResourceCycle.State.ROTTEN;
 
     private void UpdateResourceState()
@@ -96,7 +104,8 @@ internal sealed partial class NetworkActor
             {
                 var actorId = ActorId;
 
-                if (actorId.Value != 0)
+                // Not before the host's world is loaded: until then our actor ids mean other actors on the host.
+                if (actorId.Value != 0 && SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges)
                     Main.SendToAllOrServer(new ActorTransferPacket { ActorId = actorId, OwnerId = LocalID });
             }
         }
@@ -198,16 +207,9 @@ internal sealed partial class NetworkActor
         if (gameObject.transform.localScale.x < cycle._defaultScale.x)
             gameObject.transform.localScale = cycle._defaultScale;
 
-        if (cycle._joint == null)
-            return;
-
-        if (rigidbody)
-        {
-            rigidbody.isKinematic = false;
-            rigidbody.WakeUp();
-        }
-
-        cycle.DetachFromJoint();
+        // Ripe produce stays on the plant, as in the game (ResourceCycle.Ripen only changes the state).
+        // It comes off its joint when it turns edible, which HandleEdibleState does. Detaching it here
+        // dropped freshly ripened produce off the plant on every game but its owner's.
     }
 
     private void HandleEdibleState()

@@ -18,17 +18,25 @@ namespace SR2MP.Patches.Ammo
             if (!__result)
                 return;
 
-            var packet = new AmmoAddToSlotPacket()
+            try
             {
-                Identifiable = NetworkActorManager.GetPersistentID(metadata.Id),
-                SlotIndex = slotIdx,
-                Count = count,
-                ID = __instance.GetPlotID()
-            };
+                var id = __instance.GetPlotID();
+                if (id == null || metadata == null || !metadata.Id) return;
 
-            if (packet.ID == null) return;
+                NetworkSprinkleCanisterManager.MarkDirtyByAmmoKey(id);
 
-            Main.SendToAllOrServer(packet);
+                Main.SendToAllOrServer(new AmmoAddToSlotPacket
+                {
+                    Identifiable = NetworkActorManager.GetPersistentID(metadata.Id),
+                    SlotIndex = slotIdx,
+                    Count = count,
+                    ID = id
+                });
+            }
+            catch (Exception ex)
+            {
+                AmmoPatchErrors.Report(nameof(OnAmmoAddToSlot), ex);
+            }
         }
     }
 }

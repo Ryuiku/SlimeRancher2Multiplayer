@@ -29,6 +29,14 @@ internal static class OnSceneContextStart
 
             try { NetworkTornadoManager.ClientTick(); }
             catch (Exception ex) { SrLogger.LogWarning($"ClientTick: {ex.Message}"); }
+
+            // Returns at once unless this client runs a tornado the host handed to it.
+            try { NetworkTornadoManager.OwnerTick(); }
+            catch (Exception ex) { SrLogger.LogWarning($"OwnerTick: {ex.Message}"); }
+
+            // Returns at once unless hosting.
+            try { NetworkPrismaManager.HostTick(); }
+            catch (Exception ex) { SrLogger.LogWarning($"Prisma forecast HostTick: {ex.Message}"); }
         }
     }
 }

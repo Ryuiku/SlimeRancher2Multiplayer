@@ -25,6 +25,11 @@ internal abstract class BasePacketHandler<T> : IClientPacketHandler, IServerPack
     {
         var packet = reader.ReadPacket<T>();
 
+        // Counted for the zone load trace: which packets were applied while a zone was loading.
+        var duringLoad = SR2MP.Shared.Managers.NetworkActorManager.IsSceneLoadingNow;
+        if (duringLoad)
+            SR2MP.Shared.Utils.SceneLoadTrace.CountHandledDuringLoad(typeof(T).Name);
+
         bool shouldSend;
 
         try
@@ -34,6 +39,8 @@ internal abstract class BasePacketHandler<T> : IClientPacketHandler, IServerPack
         catch (Exception ex)
         {
             HandlingPacket = false;
+            if (duringLoad)
+                SR2MP.Shared.Utils.SceneLoadTrace.Record($"{typeof(T).Name} handler threw during a load: {ex.Message}");
             SrLogger.LogError($"Packet handler for {typeof(T).Name} threw: {ex}");
             return;
         }

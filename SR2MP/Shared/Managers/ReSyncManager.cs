@@ -36,7 +36,67 @@ internal sealed class ReSyncManager
         cooldowns[endPoint.ToString()] = DateTime.UtcNow;
     }
 
+    // Joins and resyncs asked for while the host is loading a zone. Actor spawns and destroys are
+    // held back during a load (but already passed on to the other players), so a snapshot taken
+    // now would miss them: the asking player would keep things that are gone and lack new ones.
+    private static readonly List<(string PlayerId, IPEndPoint EndPoint)> PendingSyncs = new();
+    private static float pendingSyncsSince;
+    private const float MaxPendingSyncSeconds = 60f;
+
+    internal static void ClearPendingSyncs() => PendingSyncs.Clear();
+
+    /// <summary>
+    /// Sends the snapshots that waited for a zone load. Called every frame on the main thread.
+    /// </summary>
+    internal static void RunPendingSyncs()
+    {
+        if (PendingSyncs.Count == 0)
+            return;
+
+        if (NetworkActorManager.IsSceneLoadingNow
+            && UnityEngine.Time.realtimeSinceStartup - pendingSyncsSince < MaxPendingSyncSeconds)
+            return;
+
+        var waiting = PendingSyncs.ToArray();
+        PendingSyncs.Clear();
+
+        if (!Main.Server.IsRunning)
+            return;
+
+        NetworkActorManager.RunDeferredWorldChanges(true);
+
+        foreach (var (playerId, endPoint) in waiting)
+        {
+            try
+            {
+                if (Main.Server.ClientManager.TryGetClient(endPoint, out _))
+                    SendWorldTo(playerId, endPoint);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogError($"Could not send the world to {playerId}: {ex}");
+            }
+        }
+    }
+
     public static void SynchronizeClient(string playerId, IPEndPoint endPoint)
+    {
+        if (NetworkActorManager.IsSceneLoadingNow)
+        {
+            if (PendingSyncs.Count == 0)
+                pendingSyncsSince = UnityEngine.Time.realtimeSinceStartup;
+
+            PendingSyncs.RemoveAll(p => p.EndPoint.Equals(endPoint));
+            PendingSyncs.Add((playerId, endPoint));
+            return;
+        }
+
+        // Anything still held back from a load that just ended goes in first.
+        NetworkActorManager.RunDeferredWorldChanges(true);
+        SendWorldTo(playerId, endPoint);
+    }
+
+    private static void SendWorldTo(string playerId, IPEndPoint endPoint)
     {
         var money = SceneContext.Instance.PlayerState.GetCurrency(
             GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>());
@@ -51,7 +111,8 @@ internal sealed class ReSyncManager
                 p => (p.PlayerId, p.Username)),
             Money = money,
             RainbowMoney = rainbowMoney,
-            AllowCheats = Main.AllowCheats
+            AllowCheats = Main.AllowCheats,
+            Currencies = CurrencySnapshot.Collect()
         };
         Main.Server.SendToClient(approvePacket, endPoint);
 
@@ -60,12 +121,14 @@ internal sealed class ReSyncManager
         SendSwitchesPacket(endPoint);
         SendRefineryPacket(endPoint);
         SendPediaPacket(endPoint);
+        SendBlueprintsPacket(endPoint);
         SendMapPacket(endPoint);
         SendAccessDoorsPacket(endPoint);
         SendResourceNodesPacket(endPoint);
         SendTreasurePodsPacket(endPoint);
         SendUpgradesPacket(endPoint);
         SendDroneResourcesPacket(endPoint);
+        SendRanchSimulationPackets(endPoint);
         SendActorsPacket(endPoint, PlayerIdGenerator.GetPlayerIDNumber(playerId));
         SendGadgetLinksPacket(endPoint);
         SendTeleporterLinksPacket(endPoint);
@@ -74,11 +137,15 @@ internal sealed class ReSyncManager
         SendPuzzleSlotsPacket(endPoint);
         SendPlortDepositorsPacket(endPoint);
         SendPrismaBarriersPacket(endPoint);
+        SendPrismaDisruptionPacket(endPoint);
         SendDroneCloudPacket(endPoint);
         SendComponentsPacket(endPoint);
         SendConversationsPacket(endPoint);
         SendEventsRaisedPacket(endPoint);
         SendTornadosPacket(endPoint);
+        SendUnlocksPacket(endPoint);
+        SendSanctuaryPackets(endPoint);
+        PlayerCosmeticsManager.SendSnapshotTo(playerId, endPoint);
 
         SrLogger.LogMessage($"Player {playerId} resynced!", $"Player {playerId} ({endPoint}) resynced!");
     }
@@ -112,6 +179,16 @@ internal sealed class ReSyncManager
 
         var clients = Main.Server.ClientManager.GetAllClients().ToList();
 
+        if (NetworkActorManager.IsSceneLoadingNow)
+        {
+            // Same as a single resync asked for during a load: sent when the load is done.
+            foreach (var client in clients)
+                SynchronizeClient(client.PlayerId, client.EndPoint);
+            return;
+        }
+
+        NetworkActorManager.RunDeferredWorldChanges(true);
+
         var gordoSlimesPacket       = CreateGordoSlimesPacket();
         var switchesPacket          = CreateSwitchesPacket();
         var plotsPacket             = CreatePlotsPacket();
@@ -126,6 +203,7 @@ internal sealed class ReSyncManager
         var puzzleSlotsPacket       = CreatePuzzleSlotsPacket();
         var plortDepositorsPacket   = CreatePlortDepositorsPacket();
         var prismaBarriersPacket    = CreatePrismaBarriersPacket();
+        var prismaDisruptionPacket  = NetworkPrismaManager.CreatePacket();
         var componentsPacket        = CreateComponentsPacket();
         var eventsRaisedPacket      = CreateEventsRaisedPacket();
 
@@ -133,6 +211,7 @@ internal sealed class ReSyncManager
             GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>());
         var rainbowMoney = SceneContext.Instance.PlayerState.GetCurrency(
             GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>());
+        var currencies = CurrencySnapshot.Collect();
 
         SrLogger.LogMessage("Resyncing all players...");
 
@@ -146,7 +225,8 @@ internal sealed class ReSyncManager
                     p => (p.PlayerId, p.Username)),
                 Money = money,
                 RainbowMoney = rainbowMoney,
-                AllowCheats = Main.AllowCheats
+                AllowCheats = Main.AllowCheats,
+                Currencies = currencies
             };
             Main.Server.SendToClient(approvePacket,         client.EndPoint);
 
@@ -164,13 +244,24 @@ internal sealed class ReSyncManager
             Main.Server.SendToClient(puzzleSlotsPacket,     client.EndPoint);
             Main.Server.SendToClient(plortDepositorsPacket, client.EndPoint);
             Main.Server.SendToClient(prismaBarriersPacket,  client.EndPoint);
+            if (prismaDisruptionPacket != null)
+                Main.Server.SendToClient(prismaDisruptionPacket, client.EndPoint);
             Main.Server.SendToClient(componentsPacket,      client.EndPoint);
             Main.Server.SendToClient(eventsRaisedPacket,  client.EndPoint);
 
+            SendBlueprintsPacket(client.EndPoint);
+            SendConversationsPacket(client.EndPoint);
             SendWeatherPacket(client.EndPoint);
+            SendDroneResourcesPacket(client.EndPoint);
+            SendRanchSimulationPackets(client.EndPoint);
             SendActorsPacket(client.EndPoint, PlayerIdGenerator.GetPlayerIDNumber(client.PlayerId));
             SendGadgetLinksPacket(client.EndPoint);
             SendTeleporterLinksPacket(client.EndPoint);
+            SendDroneCloudPacket(client.EndPoint);
+            SendTornadosPacket(client.EndPoint);
+            SendUnlocksPacket(client.EndPoint);
+            SendSanctuaryPackets(client.EndPoint);
+            PlayerCosmeticsManager.SendSnapshotTo(client.PlayerId, client.EndPoint);
         }
 
         SrLogger.LogMessage($"Resynced {clients.Count} players!");
@@ -256,15 +347,124 @@ internal sealed class ReSyncManager
 
     private static void SendWeatherPacket(IPEndPoint client)
     {
-        var weatherRegistry = Resources.FindObjectsOfTypeAll<WeatherRegistry>().FirstOrDefault();
-        if (weatherRegistry == null || weatherRegistry._model == null)
+        var weatherRegistry = SceneContext.Instance ? SceneContext.Instance.WeatherRegistry : null;
+        if (!weatherRegistry)
+            weatherRegistry = Resources.FindObjectsOfTypeAll<WeatherRegistry>().FirstOrDefault();
+
+        if (!weatherRegistry || weatherRegistry!._zones == null)
         {
-            SrLogger.LogError("WeatherRegistry or model not found!");
+            SrLogger.LogError("WeatherRegistry not found!");
             return;
         }
 
-        var packet = WeatherPacket.CreateFromModel(weatherRegistry._model, PacketType.InitialWeather);
+        var packet = WeatherPacket.CreateFromRegistry(weatherRegistry, PacketType.InitialWeather);
         Main.Server.SendToClient(packet, client);
+    }
+
+    private static void SendBlueprintsPacket(IPEndPoint client)
+    {
+        try
+        {
+            var blueprints = SceneContext.Instance.GadgetDirector._model.blueprints;
+            if (blueprints == null)
+                return;
+
+            var packet = new SR2MP.Packets.Gadget.BlueprintsPacket();
+            foreach (var blueprint in blueprints)
+            {
+                if (blueprint)
+                    packet.Blueprints.Add(NetworkActorManager.GetPersistentID(blueprint));
+            }
+
+            if (packet.Blueprints.Count > 0)
+                Main.Server.SendToClient(packet, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send blueprints: {ex.Message}");
+        }
+    }
+
+    // Palettes, sanctuary themes, slime appearances, secret styles and rewards kiosk progress:
+    // kept per player by the game, shared from the host's save here.
+    // Sanctuary rooms (themes, pre-placed gadgets), sprinkle canisters and the Caretaker shop.
+    // Sent after the actors, which the pre-placed gadgets refer to. Each part on its own: one
+    // that cannot be read is left out rather than breaking the join.
+    private static void SendSanctuaryPackets(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(NetworkSanctuaryManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the sanctuary rooms: {ex.Message}");
+        }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkSprinkleCanisterManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the sprinkle canisters: {ex.Message}");
+        }
+
+        try
+        {
+            var shop = NetworkShopManager.CreateStatePacket();
+            if (shop != null)
+                Main.Server.SendToClient(shop, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the shop: {ex.Message}");
+        }
+    }
+
+    // How far each ranch area has been simulated in the host's world (and who simulates it), and
+    // the growth of every garden and resource spawner in the host's save. World state, so it goes
+    // before the actors. Each part on its own: one that cannot be read is left out.
+    private static void SendRanchSimulationPackets(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(NetworkRanchCellManager.CreateSnapshot(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the ranch area times: {ex.Message}");
+        }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkGardenManager.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send the resource spawners: {ex.Message}");
+        }
+
+        try
+        {
+            Main.Server.SendToClient(NetworkGardenManager.CreateOwnershipSnapshot(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send who grows each garden: {ex.Message}");
+        }
+    }
+
+    private static void SendUnlocksPacket(IPEndPoint client)
+    {
+        try
+        {
+            Main.Server.SendToClient(UnlockLookup.CreateInitialPacket(), client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send unlocks: {ex.Message}");
+        }
     }
 
     private static void SendPediaPacket(IPEndPoint client)
@@ -277,7 +477,11 @@ internal sealed class ReSyncManager
         var unlockedArray = Il2CppSystem.Linq.Enumerable
             .ToArray(unlocked.Cast<CppCollections.IEnumerable<PediaEntry>>());
 
-        var unlockedIDs = unlockedArray.Select(entry => entry.TryCast<PediaEntry>()?.PersistenceId).ToList();
+        // An entry that is not a PediaEntry or has no id would only be skipped on the other side.
+        var unlockedIDs = unlockedArray
+            .Select(entry => entry.TryCast<PediaEntry>()?.PersistenceId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .ToList();
 
         return new InitialPediaPacket { Entries = unlockedIDs };
     }
@@ -287,6 +491,21 @@ internal sealed class ReSyncManager
 
     private static InitialMapPacket CreateMapPacket()
     {
+        // Saves from older versions can have a zone's map areas revealed without the zone. This
+        // normally happened when the server started; anything found now also goes to the players
+        // already here (the joiner gets it in this packet).
+        foreach (var zone in SR2MP.Shared.Utils.MapEvents.RepairZonesFromRevealedAreas())
+        {
+            try
+            {
+                Main.Server.SendToAll(new MapUnlockPacket { NodeID = zone, EventKey = SR2MP.Shared.Utils.MapEvents.ZoneEventKey });
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not share repaired zone {zone}: {ex.Message}");
+            }
+        }
+
         if (!SceneContext.Instance.eventDirector._model.table.TryGetValue(MapEventKey, out var maps))
         {
             maps = new CppCollections.Dictionary<string, EventRecordModel.Entry>();
@@ -298,7 +517,11 @@ internal sealed class ReSyncManager
         foreach (var map in maps)
             mapsList.Add(map.Key);
 
-        return new InitialMapPacket { UnlockedNodes = mapsList };
+        return new InitialMapPacket
+        {
+            UnlockedNodes = mapsList,
+            UnlockedZones = SR2MP.Shared.Utils.MapEvents.Keys(SR2MP.Shared.Utils.MapEvents.ZoneEventKey)
+        };
     }
 
     private static void SendEventsRaisedPacket(IPEndPoint client)
@@ -413,6 +636,14 @@ internal sealed class ReSyncManager
     private static void SendPrismaBarriersPacket(IPEndPoint client)
         => Main.Server.SendToClient(CreatePrismaBarriersPacket(), client);
 
+    // The host's Labyrinth disruption forecast; the joiner's own save rolled a different one.
+    private static void SendPrismaDisruptionPacket(IPEndPoint client)
+    {
+        var packet = NetworkPrismaManager.CreatePacket();
+        if (packet != null)
+            Main.Server.SendToClient(packet, client);
+    }
+
     private static InitialPrismaBarriersPacket CreatePrismaBarriersPacket()
     {
         var barriersList = new List<InitialPrismaBarriersPacket.Barrier>();
@@ -441,6 +672,9 @@ internal sealed class ReSyncManager
             if (NetworkDroneManager.IsDroneModel(model))
                 continue;
 
+            if (model.ident != null && model.ident.IsPlayer)
+                continue;
+
             actorsList.Add(NetworkActorManager.CreateInitialActor(model));
         }
 
@@ -461,7 +695,41 @@ internal sealed class ReSyncManager
             WorldTime = GameState.world.worldTime
         };
 
+        // Owners first: the client applies the actors as soon as they arrive and decides right
+        // then which of them to take over.
+        SendActorOwnersPacket(client);
         Main.Server.SendToClient(actorsPacket, client);
+    }
+
+    private static void SendActorOwnersPacket(IPEndPoint client)
+    {
+        try
+        {
+            var packet = new InitialActorOwnersPacket();
+            var ownerIndices = new Dictionary<string, int>();
+
+            foreach (var (actorId, owner) in ActorManager.CollectOwners())
+            {
+                // Owners who left don't count: their actors are up for grabs.
+                if (owner != LocalID && !PlayerManager.CheckPlayerExists(owner))
+                    continue;
+
+                if (!ownerIndices.TryGetValue(owner, out var index))
+                {
+                    index = packet.Owners.Count;
+                    packet.Owners.Add(owner);
+                    ownerIndices[owner] = index;
+                }
+
+                packet.Actors.Add((actorId, index));
+            }
+
+            Main.Server.SendToClient(packet, client);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not send actor owners: {ex.Message}");
+        }
     }
 
     private static void SendGadgetLinksPacket(IPEndPoint client)
@@ -571,6 +839,29 @@ internal sealed class ReSyncManager
     private static void SendPlotsPacket(IPEndPoint client)
         => Main.Server.SendToClient(CreatePlotsPacket(), client);
 
+    private static InitialLandPlotsPacket.GardenData GardenData(LandPlotModel plot)
+    {
+        var data = new InitialLandPlotsPacket.GardenData
+        {
+            Crop = plot.resourceGrowerDefinition == null
+                ? NetworkGardenPlanting.ClearCrop
+                : NetworkActorManager.GetPersistentID(plot.resourceGrowerDefinition._primaryResourceType!)
+        };
+
+        // Unity's own null check: after the ranch unloads, gameObj is a destroyed object that is
+        // not null to C#, and reading it threw and lost every plot for the joining player.
+        var spawner = plot.gameObj ? plot.gameObj.GetComponentInChildren<SpawnResource>() : null;
+        var growth = spawner ? spawner!._model : null;
+        if (growth != null)
+        {
+            data.NextSpawnTime = growth.nextSpawnTime;
+            data.StoredWater = growth.storedWater;
+            data.NextSpawnRipens = growth.nextSpawnRipens;
+        }
+
+        return data;
+    }
+
     private static InitialLandPlotsPacket CreatePlotsPacket()
     {
         var landPlotsList = new List<InitialLandPlotsPacket.BasePlot>();
@@ -579,15 +870,7 @@ internal sealed class ReSyncManager
         {
             INetObject? data = plot.typeId switch
             {
-                LandPlot.Id.GARDEN => new InitialLandPlotsPacket.GardenData
-                {
-                    Crop = plot.resourceGrowerDefinition == null
-                        ? 9
-                        : NetworkActorManager.GetPersistentID(plot.resourceGrowerDefinition._primaryResourceType!),
-                    NextSpawnTime = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.nextSpawnTime ?? 0,
-                    StoredWater = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.storedWater ?? 0,
-                    NextSpawnRipens = plot.gameObj?.GetComponentInChildren<SpawnResource>()?._model?.nextSpawnRipens ?? false,
-                },
+                LandPlot.Id.GARDEN => GardenData(plot),
                 LandPlot.Id.POND => new InitialLandPlotsPacket.CoopPondData
                 {
                     CollectorAmmo = SerializeAmmo(plot.siloAmmo, PlortCollectorAmmo)
@@ -610,7 +893,10 @@ internal sealed class ReSyncManager
                 {
                     AutoFeederSpeed = (byte)plot.feederCycleSpeed,
                     PlortCollectorAmmo = SerializeAmmo(plot.siloAmmo, PlortCollectorAmmo),
-                    AutoFeederAmmo = SerializeAmmo(plot.siloAmmo, FeederAmmo)
+                    AutoFeederAmmo = SerializeAmmo(plot.siloAmmo, FeederAmmo),
+                    NextFeedingTime = plot.nextFeedingTime,
+                    RemainingFeedOperations = plot.remainingFeedOperations,
+                    CollectorNextTime = plot.collectorNextTime
                 },
                 _ => null
             };
@@ -638,12 +924,16 @@ internal sealed class ReSyncManager
 
     private static InitialTreasurePodsPacket CreateTreasurePodsPacket()
     {
-        var treasurePods = new Dictionary<int, TreasurePod.State>();
+        Handlers.TreasurePod.TreasurePodHandler.RepairDuplicatePods();
+
+        var treasurePods = new Dictionary<string, TreasurePod.State>();
 
         foreach (var treasurePod in GameState.pods)
         {
-            if (int.TryParse(treasurePod.key.Replace("pod", string.Empty), out var podId))
-                treasurePods.Add(podId, treasurePod.value.state);
+            if (string.IsNullOrEmpty(treasurePod.key) || treasurePod.value?.state == null)
+                continue;
+
+            treasurePods[treasurePod.key] = treasurePod.value.state.Value;
         }
 
         return new InitialTreasurePodsPacket() { TreasurePods = treasurePods };

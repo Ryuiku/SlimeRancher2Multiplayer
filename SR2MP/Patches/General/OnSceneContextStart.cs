@@ -38,13 +38,25 @@ internal static class OnSceneContextStart
     {
         foreach (var door in Resources.FindObjectsOfTypeAll<AccessDoor>())
         {
-            if (!door || string.IsNullOrEmpty(door._id)) continue;
-            if (!GameState.doors.TryGetValue(door._id, out var model)) continue;
-            if (door.CurrState == model.state) continue;
+            // One door that throws must neither stop the rest nor leave HandlingPacket set,
+            // which would keep this game from sending anything for the rest of the session.
+            try
+            {
+                if (!door || string.IsNullOrEmpty(door._id)) continue;
+                if (!GameState.doors.TryGetValue(door._id, out var model)) continue;
+                if (door.CurrState == model.state) continue;
 
-            HandlingPacket = true;
-            door.CurrState = model.state;
-            HandlingPacket = false;
+                HandlingPacket = true;
+                door.CurrState = model.state;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not apply an access door after a zone load: {ex.Message}");
+            }
+            finally
+            {
+                HandlingPacket = false;
+            }
         }
     }
 }

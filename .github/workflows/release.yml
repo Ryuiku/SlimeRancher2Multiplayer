@@ -1,0 +1,44 @@
+# Creates a DRAFT GitHub Release of the Patched fork from a folder in fork-releases/.
+# Nothing is public until someone presses "Publish release" on the draft.
+# Run it from the Actions tab: "Draft a Patched release", enter the version (e.g. 0.3.9-Patched).
+# fork-releases/<version>/ must hold SR2MP.dll and notes.md.
+name: Draft a Patched release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version folder under fork-releases/ (e.g. 0.3.9-Patched)'
+        required: true
+        default: '0.3.9-Patched'
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the release folder
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-Patched(\.[0-9]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a Patched version like 0.3.9-Patched"
+            exit 1
+          fi
+          test -f "fork-releases/$VERSION/SR2MP.dll" || { echo "::error::fork-releases/$VERSION/SR2MP.dll is missing"; exit 1; }
+          test -f "fork-releases/$VERSION/notes.md" || { echo "::error::fork-releases/$VERSION/notes.md is missing"; exit 1; }
+          sha256sum "fork-releases/$VERSION/SR2MP.dll"
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          gh release create "v$VERSION" "fork-releases/$VERSION/SR2MP.dll" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "Ranching Together (Patched) $VERSION" \
+            --notes-file "fork-releases/$VERSION/notes.md"

@@ -28,9 +28,16 @@ internal sealed class AccessDoorHandler : BasePacketHandler<AccessDoorPacket>
 
         if (model.gameObj)
         {
+            // Reset even when the door throws, so later local changes are still sent.
             HandlingPacket = true;
-            model.gameObj.GetComponent<AccessDoor>().CurrState = packet.State;
-            HandlingPacket = false;
+            try
+            {
+                model.gameObj.GetComponent<AccessDoor>().CurrState = packet.State;
+            }
+            finally
+            {
+                HandlingPacket = false;
+            }
         }
 
         return true;

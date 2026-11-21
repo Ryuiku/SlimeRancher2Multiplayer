@@ -4,6 +4,13 @@ namespace SR2MP.Packets.Internal;
 
 internal sealed class ModSyncPacket : IPacket
 {
+    /// <summary>
+    /// Reserved key in <see cref="Mods"/> that carries the client's own Ranching Together version,
+    /// so the host can turn away a player whose build can't talk to it (for example the original
+    /// mod joining a Patched host). Mod ids are string hashes, so this value won't clash in practice.
+    /// </summary>
+    public const uint SelfVersionKey = uint.MaxValue;
+
     public string PlayerId;
     public Dictionary<uint, ModData> Mods;
 

@@ -25,7 +25,7 @@ internal sealed class GardenOwnershipPacket : IPacket
     public List<Entry> Entries;
 
     public PacketType Type => PacketType.GardenOwnership;
-    public PacketReliability Reliability => PacketReliability.Reliable;
+    public PacketReliability Reliability => PacketReliability.ReliableOrdered;
     public NetworkChannel Channel => NetworkChannel.Landplots;
 
     public void Serialise(PacketWriter writer)

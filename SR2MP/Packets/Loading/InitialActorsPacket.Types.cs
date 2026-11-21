@@ -264,6 +264,17 @@ internal partial class InitialActorsPacket
         public NetworkAmmo Ammo;
         public string DroneOwnerId = string.Empty;
 
+        // Explorer program plan (only meaningful for explorer stations), so a joiner's drone menu
+        // shows the host's next collection instead of a new random one. NoProgram: the host has none.
+        internal const byte NoProgram = byte.MaxValue;
+        public double NextResourceTime;
+        public int NextResourceType = -1;
+        public byte ProgramState = NoProgram;
+        public double NextGatherDuration;
+
+        // Items still to eject from a Quantum Cloud extraction.
+        public List<int> PendingExtraction = new();
+
         protected override ActorType Type => ActorType.DroneStation;
 
         public override void Serialise(PacketWriter writer)
@@ -275,6 +286,11 @@ internal partial class InitialActorsPacket
             writer.WriteNetObject(Task);
             writer.WriteNetObject(Ammo);
             writer.WriteString(DroneOwnerId);
+            writer.WriteDouble(NextResourceTime);
+            writer.WritePackedInt(NextResourceType);
+            writer.WriteByte(ProgramState);
+            writer.WriteDouble(NextGatherDuration);
+            writer.WriteList(PendingExtraction, PacketWriterDels.PackedInt);
         }
         
         public override void Deserialise(PacketReader reader)
@@ -286,6 +302,11 @@ internal partial class InitialActorsPacket
             Task = reader.ReadNetObject<DroneTask>();
             Ammo = reader.ReadNetObject<NetworkAmmo>();
             DroneOwnerId = reader.ReadPooledString()!;
+            NextResourceTime = reader.ReadDouble();
+            NextResourceType = reader.ReadPackedInt();
+            ProgramState = reader.ReadByte();
+            NextGatherDuration = reader.ReadDouble();
+            PendingExtraction = reader.ReadList(PacketReaderDels.PackedInt) ?? new List<int>();
         }
     }
     

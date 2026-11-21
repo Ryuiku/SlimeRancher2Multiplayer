@@ -1,5 +1,6 @@
 using System.Collections;
 using HarmonyLib;
+using SR2MP.Components.Actor;
 using SR2MP.Packets.GordoSlime;
 using SR2MP.Shared.Managers;
 
@@ -29,6 +30,16 @@ internal static class OnGordoSlimeGiveRewards
             return false;
 
         NetworkGordoSlimeManager.MarkRewarded(id);
+
+        // Every game that has the gordo loaded can reach its burst (the eaten count is shared), and
+        // each one would drop its own crates. Only the game that fed the last piece does. When no
+        // game is known to have done that (a cheat, say), the host gives them out.
+        if (!NetworkGordoSlimeManager.IsLocalFinisher(id)
+            && (!Main.Server.IsRunning || NetworkGordoSlimeManager.IsRemoteFinisher(id)))
+        {
+            SrLogger.LogDebug($"Gordo {id} rewards left to the player who fed it last");
+            return false;
+        }
 
         __state = new RewardSnapshot { GordoSlimeId = id };
 
@@ -76,6 +87,16 @@ internal static class OnGordoSlimeGiveRewards
 
     private static IEnumerator SpawnRewardOverNetwork(GordoRewardsBase gordoSlimeRewards, string gordoSlimeId, BreakOnImpact breakable)
     {
+        // A crate that is an actor was already announced as an actor spawn (by OnActorSpawn or the
+        // loop above). Sending it as a reward too made every other game create a second crate.
+        if (breakable && breakable.GetComponent<NetworkActor>())
+        {
+            SrLogger.LogDebug($"Gordo {gordoSlimeId} reward crate {breakable.name} travels as an actor");
+            yield break;
+        }
+
+        SrLogger.LogDebug($"Gordo {gordoSlimeId} reward {(breakable ? breakable.name : "?")} is not an actor; sending it as a gordo reward");
+
         var elapsed = 0f;
         while (elapsed < 5f)
         {

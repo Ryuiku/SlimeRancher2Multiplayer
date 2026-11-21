@@ -10,23 +10,33 @@ internal sealed class ActorUnloadHandler : BasePacketHandler<ActorUnloadPacket>
 {
     protected override bool Handle(ActorUnloadPacket packet, IPEndPoint? _)
     {
+        // If this game can't take the actor over (its zone isn't loaded here), the host still passes
+        // the message on: another player may be standing right next to it.
         if (!ActorManager.Actors.TryGetValue(packet.ActorId.Value, out var actor))
-            return false;
+            return true;
 
         if (!actor.TryGetNetworkComponent(out var component))
-            return false;
+            return true;
 
         if (!component.RegionMember)
-            return false;
+            return true;
         
         if (!string.IsNullOrEmpty(component.CurrentOwnerId) &&
             component.CurrentOwnerId != packet.SenderId)
             return false;
 
-        if (!component.RegionMember!._hibernating)
+        // A tangle bud still hanging on its stalk stays with the player who grew it: here it would
+        // have no stalk to hang from and would fall. Picking it (vac) still takes it.
+        if (SR2MP.Shared.Managers.NetworkTangleManager.IsHangingBud(packet.ActorId.Value))
+            return true;
+
+        // A joining player whose world isn't loaded yet must not take anything over.
+        if (!component.RegionMember!._hibernating && SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges)
         {
             component.LocallyOwned = true;
             component.CurrentOwnerId = LocalID;
+            component.LastLocalClaimTime = UnityEngine.Time.time;
+            SR2MP.Shared.Managers.NetworkActorManager.RememberOwner(packet.ActorId.Value, LocalID);
 
             Main.SendToAllOrServer(new ActorTransferPacket
             {

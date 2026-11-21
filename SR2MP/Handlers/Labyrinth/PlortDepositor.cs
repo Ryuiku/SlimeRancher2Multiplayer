@@ -12,8 +12,19 @@ internal sealed class PlortDepositorHandler : BasePacketHandler<PlortDepositorPa
     protected override bool Handle(PlortDepositorPacket packet, IPEndPoint? _)
     {
         HandlingPacket = true;
-        NetworkPlortDepositorManager.ApplyState(packet.ID, packet.AmountDeposited);
-        HandlingPacket = false;
+        try
+        {
+            NetworkPlortDepositorManager.ApplyState(packet.ID, packet.AmountDeposited);
+        }
+        catch (Exception ex)
+        {
+            // Still pass it on to the other players (the host returns true below).
+            SrLogger.LogWarning($"Could not apply plort depositor {packet.ID}: {ex.Message}");
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         return true;
     }

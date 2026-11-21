@@ -168,8 +168,41 @@ internal sealed partial class NetworkActorManager
             if (droneModel._type == DroneType.RANCH_DRONE)
                 droneModel.InitializeForRancher(SceneContext.Instance.DroneDirector);
             else
+            {
                 droneModel.InitializeForExplorer(SceneContext.Instance.DroneDirector, SceneContext.Instance.TimeDirector,
                     SceneContext.Instance.DroneDirector.GetStationAreaResources(droneModel));
+
+                // InitializeForExplorer makes a new program with a new random plan; the host's plan
+                // replaces it so the next collection is the same for everyone.
+                try
+                {
+                    var program = droneModel.Program;
+                    if (program != null && actorData.ProgramState != InitialActorsPacket.DroneStation.NoProgram)
+                    {
+                        NetworkDroneManager.ApplyProgramState(program, new SR2MP.Packets.Drone.ExplorerProgramStatePacket
+                        {
+                            StationId = actorData.ActorId,
+                            State = actorData.ProgramState,
+                            NextResourceType = actorData.NextResourceType,
+                            NextResourceTime = actorData.NextResourceTime,
+                            NextGatherDuration = actorData.NextGatherDuration
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogDebug($"Failed to apply the explorer program of drone station {actorData.ActorId}: {ex.Message}");
+                }
+            }
+
+            try
+            {
+                NetworkDroneManager.ApplyExtractionQueue(droneModel, actorData.PendingExtraction);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Failed to apply the cloud extraction queue of drone station {actorData.ActorId}: {ex.Message}");
+            }
 
             droneModel.Initialized = true;
         });

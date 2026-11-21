@@ -11,8 +11,8 @@ internal sealed class ActorTransferHandler : BasePacketHandler<ActorTransferPack
 {
     protected override bool Handle(ActorTransferPacket packet, IPEndPoint? _)
     {
-        NetworkActorManager.ApplyOwnership(packet);
-
-        return true;
+        // False when we kept the actor because we claimed it at the same moment. Our own claim was
+        // sent again in that case, so the other player's claim is not passed on.
+        return NetworkActorManager.ApplyOwnership(packet);
     }
 }

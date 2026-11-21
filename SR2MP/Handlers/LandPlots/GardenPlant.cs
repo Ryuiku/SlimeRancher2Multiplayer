@@ -2,44 +2,64 @@ using System.Net;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.LandPlots;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.LandPlots;
 
 [PacketHandler((byte)PacketType.GardenPlant)]
 internal sealed class GardenPlantHandler : BasePacketHandler<GardenPlantPacket>
 {
-    protected override bool Handle(GardenPlantPacket packet, IPEndPoint? _)
+    protected override bool Handle(GardenPlantPacket packet, IPEndPoint? clientEp)
     {
-        var model = GameState.landPlots[packet.ID];
-
-        if (packet.ActorType == 9)
+        try
         {
-            model.resourceGrowerDefinition = null;
+            // The host's copy of a change this game made and has changed again since.
+            if (!IsServerSide && NetworkGardenManager.IsOutdatedOwnChange(packet.ID, packet.Origin, packet.Seq))
+                return true;
 
-            if (!model.gameObj) return true;
-            var plot = model.gameObj.GetComponentInChildren<LandPlot>();
-
-            HandlingPacket = true;
-            plot.DestroyAttached();
-            HandlingPacket = false;
+            Apply(packet);
         }
-        else
+        catch (Exception ex)
         {
-            var actor = ActorManager.ActorTypes[packet.ActorType];
-
-            model.resourceGrowerDefinition =
-                GameContext.Instance.AutoSaveDirector._saveReferenceTranslation._resourceGrowerTranslation.RawLookupDictionary._entries.FirstOrDefault(x =>
-                    x.value._primaryResourceType == actor)!.value;
-
-            if (!model.gameObj) return true;
-            var garden = model.gameObj.GetComponentInChildren<GardenCatcher>();
-
-            HandlingPacket = true;
-            if (garden.CanAccept(actor))
-                garden.Plant(actor, true);
-            HandlingPacket = false;
+            SrLogger.LogError($"Garden {packet.ID}: could not apply a plant from another player: {ex}");
         }
 
-        return true;
+        if (!IsServerSide)
+            return true;
+
+        // The host's plot is what every game ends up with, the sender's included. Two players
+        // planting into the same plot at once each kept their own crop when the host only passed
+        // each plant on to the others.
+        Main.Server.SendToAll(packet);
+        return false;
+    }
+
+    private static void Apply(GardenPlantPacket packet)
+    {
+        // A garden this save never loaded gets a model, so the crop is there when it loads.
+        var model = NetworkLandPlotManager.GetOrCreateModel(packet.ID);
+        if (model == null)
+        {
+            SrLogger.LogWarning($"Garden {packet.ID}: no plot here, plant ignored");
+            return;
+        }
+
+        if (packet.ActorType == NetworkGardenPlanting.ClearCrop)
+        {
+            NetworkGardenPlanting.Clear(model, packet.ID);
+            return;
+        }
+
+        if (!ActorManager.ActorTypes.TryGetValue(packet.ActorType, out var crop) || crop == null)
+        {
+            SrLogger.LogWarning($"Garden {packet.ID}: unknown crop type {packet.ActorType}, plant ignored");
+            return;
+        }
+
+        var planted = NetworkGardenPlanting.Plant(model, crop, packet.ID);
+
+        // Our own crop had to be made again here: it is still ours to grow.
+        if (planted && packet.Origin == LocalID && !string.IsNullOrEmpty(packet.Origin))
+            planted!.GetComponent<SR2MP.Components.LandPlots.NetworkGarden>()?.ClaimOnReady();
     }
 }

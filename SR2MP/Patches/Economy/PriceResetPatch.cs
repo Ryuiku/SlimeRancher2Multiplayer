@@ -16,6 +16,7 @@ internal static class PriceResetPatch
             return;
 
         var packet = new MarketPricePacket { Prices = MarketPricesArray! };
+        SR2MP.Shared.Managers.MarketPriceSync.Remember(packet.Prices);
 
         Main.SendToAllOrServer(packet);
     }

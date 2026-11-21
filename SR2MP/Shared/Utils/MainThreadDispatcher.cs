@@ -31,6 +31,25 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         SrLogger.LogMessage("Main thread dispatcher initialized");
     }
 
+    /// <summary>
+    /// Keeps the game running while its window is not in front. A player who tabs out would
+    /// otherwise stop simulating the slimes their game is running, for everyone. Any thread.
+    /// </summary>
+    internal static void KeepRunningInBackground()
+    {
+        if (!Instance)
+            return;
+
+        Instance.Enqueue(() =>
+        {
+            if (!Application.runInBackground)
+            {
+                Application.runInBackground = true;
+                SrLogger.LogMessage("The game now keeps running while its window is in the background.");
+            }
+        });
+    }
+
     public void Update()
     {
         // Process general actions
@@ -44,6 +63,59 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             {
                 SrLogger.LogError($"Error executing main thread action: {ex}");
             }
+        }
+
+        // Actor spawns and destroys that were held back while a zone was loading
+        SR2MP.Shared.Managers.NetworkActorManager.RunDeferredWorldChanges();
+
+        // Joins and resyncs that waited for the host's zone load
+        try
+        {
+            SR2MP.Shared.Managers.ReSyncManager.RunPendingSyncs();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending a delayed world snapshot: {ex}");
+        }
+
+        // The host's Caretaker shop after a restock
+        try
+        {
+            SR2MP.Shared.Managers.NetworkShopManager.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending the shop: {ex}");
+        }
+
+        // How far the ranch areas awake here have been simulated, and who runs their catch-up
+        try
+        {
+            SR2MP.Shared.Managers.NetworkRanchCellManager.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending the ranch area times: {ex}");
+        }
+
+        // Auto-feeder schedules after this frame's feeding and catch-up
+        try
+        {
+            SR2MP.Shared.Managers.NetworkFeederSync.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending feeder schedules: {ex}");
+        }
+
+        // Market prices on the host after a sale
+        try
+        {
+            SR2MP.Shared.Managers.MarketPriceSync.Tick();
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogError($"Error sending market prices: {ex}");
         }
 
         // Process client packets
@@ -69,7 +141,10 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         {
             try
             {
-                serverCache.Handler.Handle(serverCache.Reader, serverCache.ClientEp);
+                // A packet that was still on its way in when the server closed is thrown away:
+                // handled now, an ownership claim would freeze an actor nobody moves anymore.
+                if (Main.Server.IsRunning)
+                    serverCache.Handler.Handle(serverCache.Reader, serverCache.ClientEp);
             }
             catch (Exception ex)
             {
@@ -91,6 +166,26 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
 
     [HideFromIl2Cpp]
     public void Enqueue(in ServerHandleCache cache) => serverPacketQueue.Enqueue(cache);
+
+    /// <summary>
+    /// Throws away client packets that were received but not handled yet. Main thread only.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void DropClientPackets()
+    {
+        while (clientPacketQueue.TryDequeue(out var cache))
+            PacketReader.Return(cache.Reader);
+    }
+
+    /// <summary>
+    /// Throws away server packets that were received but not handled yet. Main thread only.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void DropServerPackets()
+    {
+        while (serverPacketQueue.TryDequeue(out var cache))
+            PacketReader.Return(cache.Reader);
+    }
 
     public void OnDestroy()
     {

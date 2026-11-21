@@ -12,17 +12,29 @@ internal static class OnAmmoDecrement
     {
         if ((!Main.Client.IsConnected && !Main.Server.IsRunning) || HandlingPacket) return;
 
-        if (__instance.Slots[index]!._count <= 0) __instance.Slots[index]!._id = null;
-
-        var packet = new AmmoDecrementPacket()
+        try
         {
-            SlotIndex = index,
-            Count = count,
-            ID = __instance.GetPlotID()
-        };
+            var slots = __instance.Slots;
+            if (slots == null || index < 0 || index >= slots.Length) return;
 
-        if (packet.ID == null) return;
+            var slot = slots[index];
+            if (slot != null && slot._count <= 0) slot._id = null;
 
-        Main.SendToAllOrServer(packet);
+            var id = __instance.GetPlotID();
+            if (id == null) return;
+
+            NetworkSprinkleCanisterManager.MarkDirtyByAmmoKey(id);
+
+            Main.SendToAllOrServer(new AmmoDecrementPacket
+            {
+                SlotIndex = index,
+                Count = count,
+                ID = id
+            });
+        }
+        catch (Exception ex)
+        {
+            AmmoPatchErrors.Report(nameof(OnAmmoDecrement), ex);
+        }
     }
 }

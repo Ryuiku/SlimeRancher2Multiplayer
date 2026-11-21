@@ -1,3 +1,4 @@
+using Il2CppMonomiPark.SlimeRancher.Player.CharacterController.Abilities;
 using Starlight.Utils;
 using SR2MP.Components.FX;
 
@@ -82,6 +83,7 @@ internal sealed class RemoteFXManager
             { PlayerFXType.VacRunningEnd, AllCues["VacEnd"]},
             { PlayerFXType.VacShootSound, AllCues["VacShoot"]}
         };
+        AddPulseWave();
         WorldFXMap = new Dictionary<WorldFXType, GameObject>
         {
             { WorldFXType.None, null! },
@@ -105,6 +107,10 @@ internal sealed class RemoteFXManager
         foreach (var (playerFX, obj) in PlayerFXMap)
         {
             if (!obj)
+                continue;
+
+            // Sent by Patches/FX/OnPulseWave.cs; a component here would send every shown pulse again.
+            if (playerFX == PlayerFXType.VacPulse)
                 continue;
 
             // Please Az find a better way :sob:
@@ -144,7 +150,9 @@ internal sealed class RemoteFXManager
         SrLogger.LogMessage("RemoteFXManager initialized");
     }
 
-    public bool TryGetFXType(SECTR_AudioCue cue, out PlayerFXType fxType) => TryGetFXType(cue, PlayerAudioCueMap, out fxType);
+    // The pulse sound is sent once by the pulse patch itself, never again from where it plays.
+    public bool TryGetFXType(SECTR_AudioCue cue, out PlayerFXType fxType) =>
+        TryGetFXType(cue, PlayerAudioCueMap, out fxType) && fxType != PlayerFXType.VacPulseSound;
 
     public bool TryGetFXType(SECTR_AudioCue cue, out WorldFXType fxType) => TryGetFXType(cue, WorldAudioCueMap, out fxType);
 
@@ -165,6 +173,40 @@ internal sealed class RemoteFXManager
         }
 
         return false;
+    }
+
+    // Other players' Pulse Wave: the ability's own shockwave and start sound.
+    private void AddPulseWave()
+    {
+        try
+        {
+            var pulseWave = Resources.FindObjectsOfTypeAll<PulseWaveAbilityData>().FirstOrDefault();
+            if (!pulseWave)
+            {
+                SrLogger.LogWarning("Pulse Wave data not found; other players' pulses will not be shown");
+                return;
+            }
+
+            var fx = pulseWave!._pulseFx;
+            if (fx)
+            {
+                PlayerFXMap[PlayerFXType.VacPulse] = fx;
+
+                // In the log so a test can tell whether the effect carries more than visuals.
+                var components = string.Join(", ", fx.GetComponentsInChildren<Component>(true)
+                    .Where(c => c)
+                    .Select(c => c.GetIl2CppType().Name)
+                    .Distinct());
+                SrLogger.LogMessage($"Pulse Wave effect '{fx.name}' has: {components}");
+            }
+
+            if (pulseWave._pulseWaveStartCue)
+                PlayerAudioCueMap[PlayerFXType.VacPulseSound] = pulseWave._pulseWaveStartCue;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not set up other players' Pulse Wave: {ex.Message}");
+        }
     }
 
     // public static void PlayTransientAudio(SECTR_AudioCue cue, Vector3 position, bool loop = false)

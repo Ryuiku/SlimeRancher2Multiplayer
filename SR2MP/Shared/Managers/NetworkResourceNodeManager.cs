@@ -78,6 +78,18 @@ internal sealed class NetworkResourceNodeManager
         if (nodePlacements.TryGetValue(nodeId, out var placement))
             placement.State = (byte)state;
 
+        // Record it even when the node is not loaded here, so it is right when this player gets there.
+        try
+        {
+            var model = GetModel(nodeId);
+            if (model != null)
+                model.nodeState = state;
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Failed to record state {state} for resource node '{nodeId}': {ex.Message}");
+        }
+
         var node = GetNode(nodeId);
         if (node == null || node._model == null)
         {

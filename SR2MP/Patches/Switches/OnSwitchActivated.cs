@@ -29,6 +29,9 @@ internal static class OnSwitchActivated
     {
         if (HandlingPacket) return;
 
+        // Not before the host's world has arrived: until then these are the joiner's own switches.
+        if (!SR2MP.Shared.Managers.NetworkActorManager.CanSendActorChanges) return;
+
         Main.SendToAllOrServer(new WorldSwitchPacket
         {
             ID = id,

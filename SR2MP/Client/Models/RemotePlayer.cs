@@ -92,6 +92,17 @@ public sealed class RemotePlayer
     public Quaternion OnlineGadgetLocalRotation { get; internal set; }
 
     /// <summary>
+    /// When the last position update arrived (Environment.TickCount64, safe off the main thread).
+    /// 0 until the first one.
+    /// </summary>
+    public long LastUpdateTicks { get; internal set; }
+
+    /// <summary>
+    /// The player's vac mode (the game's VacuumItem.VacMode as a byte: none, shoot or vac).
+    /// </summary>
+    public byte VacMode { get; internal set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="RemotePlayer"/> class.
     /// </summary>
     /// <param name="playerId">The unique identifier to assign to this player.</param>

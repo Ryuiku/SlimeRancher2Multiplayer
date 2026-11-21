@@ -11,23 +11,36 @@ internal sealed class InitialMapLoadHandler : BasePacketHandler<InitialMapPacket
 {
     protected override bool Handle(InitialMapPacket packet, IPEndPoint? _)
     {
-        var eventModel = SceneContext.Instance.eventDirector._model;
-        var dict = eventModel.table[MapEventKey] = new CppCollections.Dictionary<string, EventRecordModel.Entry>();
-
-        foreach (var node in packet.UnlockedNodes)
+        // Added to what this save already has: the host's reveals and zone unlocks, and the
+        // joiner keeps its own. The table used to be replaced and nothing was refreshed, so the
+        // map kept showing only what the joiner had explored.
+        var added = 0;
+        try
         {
-            dict[node] = new EventRecordModel.Entry
+            foreach (var node in packet.UnlockedNodes)
             {
-                count = 1,
-                createdRealTime = 0,
-                createdGameTime = 0,
-                dataKey = node,
-                eventKey = MapEventKey,
-                updatedRealTime = 0,
-                updatedGameTime = 0
-            };
+                if (!string.IsNullOrEmpty(node) && SR2MP.Shared.Utils.MapEvents.Record(MapEventKey, node))
+                    added++;
+            }
+
+            // Zones go through the game's own unlock, so their weather, radiant slimes,
+            // sanctuary and pedia reactions run here as well.
+            foreach (var zone in packet.UnlockedZones)
+            {
+                if (!string.IsNullOrEmpty(zone) && SR2MP.Shared.Utils.MapEvents.RaiseZone(zone))
+                    added++;
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not apply the host's map: {ex.Message}");
         }
 
+        // The host's revealed areas can include a zone neither save has unlocked (older versions).
+        added += SR2MP.Shared.Utils.MapEvents.RepairZonesFromRevealedAreas().Count;
+
+        SR2MP.Shared.Utils.MapEvents.Refresh();
+        SrLogger.LogMessage($"Map: host sent {packet.UnlockedNodes.Count} revealed areas and {packet.UnlockedZones.Count} zones, {added} were new here.");
         return false;
     }
 }

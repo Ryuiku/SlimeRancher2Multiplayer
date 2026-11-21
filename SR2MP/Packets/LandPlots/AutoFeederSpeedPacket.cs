@@ -8,7 +8,8 @@ internal sealed class AutoFeederSpeedPacket : IPacket
     public string ID;
 
     public PacketType Type => PacketType.AutoFeederSpeed;
-    public PacketReliability Reliability => PacketReliability.Reliable;
+    // Ordered, so a resent speed press cannot land after a newer one.
+    public PacketReliability Reliability => PacketReliability.ReliableOrdered;
     public NetworkChannel Channel => NetworkChannel.Landplots;
 
     public void Serialise(PacketWriter writer)

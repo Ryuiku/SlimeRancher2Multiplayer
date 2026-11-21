@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using SR2MP.Packets.LandPlots;
 
 namespace SR2MP.Patches.LandPlots;
@@ -10,12 +10,23 @@ internal static class OnFeederNextSpeed
     {
         if (HandlingPacket) return;
 
-        var packet = new AutoFeederSpeedPacket()
+        try
         {
-            Speed = __instance._model.feederCycleSpeed,
-            ID = __instance.gameObject.GetComponentInParent<LandPlotLocation>()._id
-        };
+            var location = __instance.GetComponentInParent<LandPlotLocation>(true);
+            var model = __instance._model;
+            if (!location || string.IsNullOrEmpty(location._id) || model == null)
+                return;
 
-        Main.SendToAllOrServer(packet);
+            // The speed the press left in the model, not a step, so a repeated packet changes nothing.
+            Main.SendToAllOrServer(new AutoFeederSpeedPacket
+            {
+                Speed = model.feederCycleSpeed,
+                ID = location._id,
+            });
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not send a feeder speed: {ex.Message}");
+        }
     }
 }

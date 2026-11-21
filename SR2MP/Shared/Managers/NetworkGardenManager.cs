@@ -1,5 +1,7 @@
+using Il2CppMonomiPark.SlimeRancher.DataModel;
 using SR2MP.Components.LandPlots;
 using SR2MP.Packets.LandPlots;
+using SR2MP.Packets.Loading;
 
 namespace SR2MP.Shared.Managers;
 
@@ -9,7 +11,8 @@ internal static class NetworkGardenManager
     
     private static readonly Dictionary<string, string> KnownOwners = new();
 
-    private static readonly HashSet<string> PendingClaims = new();
+    // Claims (our id) and releases (empty) to send, by garden; the latest change wins.
+    private static readonly Dictionary<string, string> PendingOwnership = new();
     private static readonly Dictionary<string, GardenUpdatePacket.Entry> PendingFinalStates = new();
 
     private static int lastTickFrame = -1;
@@ -21,7 +24,7 @@ internal static class NetworkGardenManager
     internal static void OnServerStarted()
     {
         KnownOwners.Clear();
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
         PendingFinalStates.Clear();
 
         foreach (var spawnResource in Object.FindObjectsOfType<SpawnResource>(true))
@@ -46,7 +49,7 @@ internal static class NetworkGardenManager
     internal static void OnDisconnected()
     {
         KnownOwners.Clear();
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
         PendingFinalStates.Clear();
 
         foreach (var garden in Gardens.Values)
@@ -62,13 +65,95 @@ internal static class NetworkGardenManager
         Gardens[id] = garden;
         SrLogger.LogGarden($"Garden registered in manager: id='{id}', total={Gardens.Count}");
 
-        if (Main.Server.IsRunning &&
-            KnownOwners.TryGetValue(id, out var owner) &&
-            owner != LocalID &&
-            PlayerManager.CheckPlayerExists(owner))
+        KnownOwners.TryGetValue(id, out var owner);
+
+        if (Main.Server.IsRunning)
         {
-            SrLogger.LogGarden($"Garden '{id}' restoring known owner '{owner}' on register");
+            if (!string.IsNullOrEmpty(owner) && owner != LocalID && PlayerManager.CheckPlayerExists(owner))
+            {
+                SrLogger.LogGarden($"Garden '{id}' restoring known owner '{owner}' on register");
+                garden.SetOwner(owner);
+            }
+            else if (owner == null && garden.LocallyOwned)
+            {
+                // The host owns what it loads first; the players are told, so a player waking the
+                // garden does not take it from the host thinking nobody has it.
+                QueueClaim(id);
+            }
+        }
+        else if (!string.IsNullOrEmpty(owner))
+        {
+            // The host's decision arrived before this game had the garden loaded.
             garden.SetOwner(owner);
+        }
+    }
+
+    // This game's own count of plant and clear changes per plot (see GardenPlantPacket).
+    private static readonly Dictionary<string, ushort> LocalPlotChanges = new();
+
+    internal static ushort NextLocalPlotChange(string plotId)
+    {
+        LocalPlotChanges.TryGetValue(plotId, out var count);
+        count = count == ushort.MaxValue ? (ushort)1 : (ushort)(count + 1);
+        LocalPlotChanges[plotId] = count;
+        return count;
+    }
+
+    /// <summary>An echo of this game's own plot change that a newer change here has replaced.</summary>
+    internal static bool IsOutdatedOwnChange(string plotId, string origin, ushort seq)
+        => origin == LocalID
+           && !string.IsNullOrEmpty(origin)
+           && LocalPlotChanges.TryGetValue(plotId, out var latest)
+           && latest != seq;
+
+    internal static void RecordHostOwner(string gardenId)
+    {
+        if (Main.Server.IsRunning)
+            KnownOwners[gardenId] = LocalID;
+    }
+
+    /// <summary>Host: who owns every garden it knows of, for a joining player.</summary>
+    internal static GardenOwnershipPacket CreateOwnershipSnapshot()
+    {
+        var entries = new List<GardenOwnershipPacket.Entry>(KnownOwners.Count);
+        foreach (var (id, owner) in KnownOwners)
+        {
+            if (!string.IsNullOrEmpty(owner))
+                entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = owner });
+        }
+
+        return new GardenOwnershipPacket { Entries = entries };
+    }
+
+    /// <summary>
+    /// A game joining a host keeps its scene: its gardens were made outside the session (no
+    /// network part) or kept what it owned offline. All of them wait for the host's word.
+    /// </summary>
+    internal static void ResetForNewConnection()
+    {
+        ClearPending();
+
+        KnownOwners.Clear();
+        PendingOwnership.Clear();
+        PendingFinalStates.Clear();
+
+        try
+        {
+            foreach (var spawnResource in Object.FindObjectsOfType<SpawnResource>(true))
+            {
+                if (spawnResource.GetComponent<NetworkGarden>() == null)
+                    spawnResource.gameObject.AddComponent<NetworkGarden>();
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not set up the gardens for the session: {ex.Message}");
+        }
+
+        foreach (var garden in Gardens.Values)
+        {
+            if (garden)
+                garden.ResetForJoin();
         }
     }
 
@@ -79,7 +164,12 @@ internal static class NetworkGardenManager
     }
 
     internal static void QueueClaim(string gardenId)
-        => PendingClaims.Add(gardenId);
+    {
+        PendingOwnership[gardenId] = LocalID;
+
+        if (Main.Server.IsRunning)
+            KnownOwners[gardenId] = LocalID;
+    }
 
     internal static void QueueFinalState(NetworkGarden garden)
     {
@@ -90,8 +180,7 @@ internal static class NetworkGardenManager
 
     internal static void ApplyOwnership(string gardenId, string ownerId)
     {
-        if (Main.Server.IsRunning)
-            KnownOwners[gardenId] = ownerId;
+        KnownOwners[gardenId] = ownerId;
 
         if (!Gardens.TryGetValue(gardenId, out var garden) || !garden)
             return;
@@ -115,12 +204,50 @@ internal static class NetworkGardenManager
         if (Main.Server.IsRunning)
             KnownOwners[gardenId] = string.Empty;
 
-        SrLogger.LogGarden($"Broadcasting garden release: id='{gardenId}'");
+        SrLogger.LogGarden($"Queueing garden release: id='{gardenId}'");
 
-        Main.SendToAllOrServer(new GardenOwnershipPacket
+        // Sent with the claims, once a second: a player walking away from an area releases every
+        // spawner in it at once.
+        PendingOwnership[gardenId] = string.Empty;
+    }
+
+    /// <summary>
+    /// Host: who owns a garden is the host's to say. Claims and releases from players are applied
+    /// here and the result is sent to everyone, the sender included, so every game agrees on the
+    /// last claim the host took. Passing each claim on as it came left two players who claimed at
+    /// once each handing the garden to the other, so nobody grew it.
+    /// </summary>
+    internal static List<GardenOwnershipPacket.Entry> Arbitrate(List<GardenOwnershipPacket.Entry> entries, string? senderId)
+    {
+        var verdicts = new List<GardenOwnershipPacket.Entry>(entries.Count);
+
+        foreach (var entry in entries)
         {
-            Entries = new List<GardenOwnershipPacket.Entry> { new() { GardenId = gardenId, OwnerId = string.Empty } }
-        });
+            if (string.IsNullOrEmpty(entry.GardenId))
+                continue;
+
+            KnownOwners.TryGetValue(entry.GardenId, out var current);
+            current ??= string.Empty;
+
+            if (string.IsNullOrEmpty(entry.OwnerId))
+            {
+                // A release only counts from the owner: one sent before someone else's claim
+                // reached the host must not take the garden from them.
+                if (!string.IsNullOrEmpty(current) && senderId != null && current != senderId)
+                    SrLogger.LogGarden($"Garden '{entry.GardenId}': stale release from '{senderId}' ignored (owner '{current}')");
+                else
+                    ApplyOwnership(entry.GardenId, string.Empty);
+            }
+            else
+            {
+                ApplyOwnership(entry.GardenId, string.IsNullOrEmpty(senderId) ? entry.OwnerId : senderId!);
+            }
+
+            KnownOwners.TryGetValue(entry.GardenId, out var verdict);
+            verdicts.Add(new GardenOwnershipPacket.Entry { GardenId = entry.GardenId, OwnerId = verdict ?? string.Empty });
+        }
+
+        return verdicts;
     }
 
     internal static void ApplyState(GardenUpdatePacket.Entry entry)
@@ -128,8 +255,271 @@ internal static class NetworkGardenManager
         var found = Gardens.TryGetValue(entry.GardenId, out var garden) && garden;
         SrLogger.LogGarden($"Garden update received: id='{entry.GardenId}', found={found}, nextSpawnTime={entry.NextSpawnTime}, storedWater={entry.StoredWater}");
         if (found)
+        {
             garden!.ApplyUpdate(entry.NextSpawnTime, entry.StoredWater, entry.NextSpawnRipens);
+            return;
+        }
+
+        ApplyToModel(entry);
     }
+
+    #region Gardens that are not loaded here
+
+    // Growth for gardens with no saved data here yet, by garden id. Applied when the garden loads.
+    private static readonly Dictionary<string, GardenUpdatePacket.Entry> PendingStates = new();
+
+    // A joining player: the host's saved growth for spawners this save has no data for yet (it
+    // only makes it when their zone first loads), by position rounded to whole metres. Written
+    // when the spawner loads here, so it does not start on this save's own defaults and then
+    // send them to the host as the owner's growth.
+    private static readonly Dictionary<(int, int, int), List<InitialResourceSpawnersPacket.Entry>> HostSpawnersNotHere = new();
+
+    static NetworkGardenManager()
+    {
+        Main.Server.OnServerStarted +=      ClearPending;
+        // A joining game is reset when it starts connecting (ResetForNewConnection), before any of
+        // the host's packets: ConnectionApprove can arrive after the host's world packets.
+        Main.Client.OnDisconnected  +=      ClearPending;
+    }
+
+    private static void ClearPending()
+    {
+        LocalPlotChanges.Clear();
+        PendingStates.Clear();
+        HostSpawnersNotHere.Clear();
+        SR2MP.Handlers.LandPlots.ResourceAttachHandler.ClearPending();
+    }
+
+    internal static bool TakePendingState(string gardenId, out GardenUpdatePacket.Entry entry)
+        => PendingStates.Remove(gardenId, out entry);
+
+    internal static bool TakeHostSpawnerState(Vector3 position, out InitialResourceSpawnersPacket.Entry entry)
+    {
+        entry = default;
+        if (HostSpawnersNotHere.Count == 0)
+            return false;
+
+        var (x, y, z) = GridKey(position);
+        List<InitialResourceSpawnersPacket.Entry>? bestBucket = null;
+        var bestIndex = -1;
+        var bestDistance = SamePositionSqr;
+
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dy = -1; dy <= 1; dy++)
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            if (!HostSpawnersNotHere.TryGetValue((x + dx, y + dy, z + dz), out var bucket))
+                continue;
+
+            for (var i = 0; i < bucket.Count; i++)
+            {
+                var distance = (bucket[i].Position - position).sqrMagnitude;
+                if (distance >= bestDistance)
+                    continue;
+
+                bestDistance = distance;
+                bestBucket = bucket;
+                bestIndex = i;
+            }
+        }
+
+        if (bestBucket == null)
+            return false;
+
+        entry = bestBucket[bestIndex];
+        bestBucket.RemoveAt(bestIndex);
+        if (bestBucket.Count == 0)
+            HostSpawnersNotHere.Remove(GridKey(entry.Position));
+        return true;
+    }
+
+    // The garden is not loaded here: its saved data (which the game finds by position when the
+    // area loads) gets the owner's growth, so this save, the host's included, keeps it.
+    private static void ApplyToModel(GardenUpdatePacket.Entry entry)
+    {
+        try
+        {
+            var model = entry.Position == Vector3.zero ? null : FindSpawnerModel(entry.Position);
+            if (model == null)
+            {
+                PendingStates[entry.GardenId] = entry;
+                return;
+            }
+
+            model.nextSpawnTime = entry.NextSpawnTime;
+            model.storedWater = entry.StoredWater;
+            model.nextSpawnRipens = entry.NextSpawnRipens;
+            PendingStates.Remove(entry.GardenId);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not write garden '{entry.GardenId}' to the save: {ex.Message}");
+        }
+    }
+
+    // Saved spawner data by position, rounded to whole metres. Rebuilt when the list changes size.
+    private static readonly Dictionary<(int, int, int), List<SpawnResourceModel>> SpawnerIndex = new();
+    private static int spawnerIndexCount = -1;
+    private static IntPtr spawnerIndexList;
+    private const float SamePositionSqr = 0.25f;
+
+    internal static SpawnResourceModel? FindSpawnerModel(Vector3 position)
+    {
+        var list = SceneContext.Instance ? SceneContext.Instance.GameModel?.resourceSpawners : null;
+        if (list == null)
+            return null;
+
+        if (list.Count != spawnerIndexCount || list.Pointer != spawnerIndexList)
+        {
+            SpawnerIndex.Clear();
+            foreach (var model in list)
+            {
+                if (model == null)
+                    continue;
+
+                var key = GridKey(model.pos);
+                if (!SpawnerIndex.TryGetValue(key, out var bucket))
+                    SpawnerIndex[key] = bucket = new List<SpawnResourceModel>(1);
+                bucket.Add(model);
+            }
+
+            spawnerIndexCount = list.Count;
+            spawnerIndexList = list.Pointer;
+        }
+
+        var (x, y, z) = GridKey(position);
+        SpawnResourceModel? best = null;
+        var bestDistance = SamePositionSqr;
+
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dy = -1; dy <= 1; dy++)
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            if (!SpawnerIndex.TryGetValue((x + dx, y + dy, z + dz), out var bucket))
+                continue;
+
+            foreach (var model in bucket)
+            {
+                var distance = (model.pos - position).sqrMagnitude;
+                if (distance >= bestDistance)
+                    continue;
+
+                bestDistance = distance;
+                best = model;
+            }
+        }
+
+        return best;
+    }
+
+    private static (int, int, int) GridKey(Vector3 position)
+        => (Mathf.RoundToInt(position.x), Mathf.RoundToInt(position.y), Mathf.RoundToInt(position.z));
+
+    /// <summary>
+    /// The growth of every garden and resource spawner in the host's save, for a joining player.
+    /// </summary>
+    internal static InitialResourceSpawnersPacket CreateInitialPacket()
+    {
+        var entries = new List<InitialResourceSpawnersPacket.Entry>();
+
+        var list = SceneContext.Instance ? SceneContext.Instance.GameModel?.resourceSpawners : null;
+        if (list != null)
+        {
+            foreach (var model in list)
+            {
+                if (model == null)
+                    continue;
+
+                entries.Add(new InitialResourceSpawnersPacket.Entry
+                {
+                    Position = model.pos,
+                    NextSpawnTime = model.nextSpawnTime,
+                    StoredWater = model.storedWater,
+                    NextSpawnRipens = model.nextSpawnRipens
+                });
+            }
+        }
+
+        return new InitialResourceSpawnersPacket { Entries = entries };
+    }
+
+    /// <summary>
+    /// A joining player: the host's growth is written to the saved data of every spawner, loaded
+    /// here or not, and kept for the spawners this save has no data for yet. The host's save is
+    /// the source of truth; a loaded spawner whose owner has it live gets that owner's newer
+    /// growth right after anyway. Leaving loaded ones to "their owner" lost the host's growth
+    /// when nobody else had them loaded: this game took them over with its own save's growth
+    /// and sent that to the host.
+    /// </summary>
+    internal static void ApplyInitialPacket(InitialResourceSpawnersPacket packet)
+    {
+        int applied = 0, live = 0, missing = 0;
+        HostSpawnersNotHere.Clear();
+
+        Dictionary<IntPtr, NetworkGarden>? gardensByModel = null;
+
+        foreach (var entry in packet.Entries)
+        {
+            try
+            {
+                var model = FindSpawnerModel(entry.Position);
+                if (model == null)
+                {
+                    var key = GridKey(entry.Position);
+                    if (!HostSpawnersNotHere.TryGetValue(key, out var bucket))
+                        HostSpawnersNotHere[key] = bucket = new List<InitialResourceSpawnersPacket.Entry>(1);
+                    bucket.Add(entry);
+                    missing++;
+                    continue;
+                }
+
+                if (model.part == null)
+                {
+                    model.nextSpawnTime = entry.NextSpawnTime;
+                    model.storedWater = entry.StoredWater;
+                    model.nextSpawnRipens = entry.NextSpawnRipens;
+                    applied++;
+                    continue;
+                }
+
+                // Loaded here: its garden keeps a copy that it restores on wake, which must match.
+                // One this game already simulates is left alone; the host's copy came from it.
+                live++;
+                gardensByModel ??= GardensByModel();
+                if (gardensByModel.TryGetValue(model.Pointer, out var garden) && garden)
+                {
+                    if (!garden.LocallyOwned)
+                        garden.ApplyHostSaved(entry.NextSpawnTime, entry.StoredWater, entry.NextSpawnRipens);
+                    continue;
+                }
+
+                model.nextSpawnTime = entry.NextSpawnTime;
+                model.storedWater = entry.StoredWater;
+                model.nextSpawnRipens = entry.NextSpawnRipens;
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogDebug($"Could not apply a resource spawner from the host: {ex.Message}");
+            }
+        }
+
+        SrLogger.LogDebug($"Resource spawners from the host: {applied} written, {live} loaded here (written too), {missing} not in this save yet (kept until they load)");
+    }
+
+    private static Dictionary<IntPtr, NetworkGarden> GardensByModel()
+    {
+        var result = new Dictionary<IntPtr, NetworkGarden>();
+        foreach (var garden in Gardens.Values)
+        {
+            var model = garden ? garden.Model : null;
+            if (model != null)
+                result[model.Pointer] = garden;
+        }
+
+        return result;
+    }
+
+    #endregion
     
     internal static void Tick()
     {
@@ -141,6 +531,8 @@ internal static class NetworkGardenManager
             return;
 
         var now = Time.time;
+
+        SR2MP.Handlers.LandPlots.ResourceAttachHandler.RetryPending();
 
         if (now >= nextClaimFlush)
         {
@@ -157,20 +549,33 @@ internal static class NetworkGardenManager
 
     private static void FlushClaims()
     {
-        if (PendingClaims.Count == 0)
+        if (PendingOwnership.Count == 0)
             return;
 
-        var entries = new List<GardenOwnershipPacket.Entry>(PendingClaims.Count);
-        foreach (var id in PendingClaims)
+        // A joining player's packets are held back until the host's world is applied. The claims
+        // are kept for then: a claim is only made once, so a dropped one would be lost for good.
+        if (!Main.Server.IsRunning && Main.Client.IsConnected && !NetworkActorManager.InitialActorsLoaded)
+            return;
+
+        var entries = new List<GardenOwnershipPacket.Entry>(PendingOwnership.Count);
+        foreach (var (id, owner) in PendingOwnership)
         {
-            entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = LocalID });
+            // A claim or release another player's claim has overtaken since: sending it would
+            // take the garden back from them.
+            if (Gardens.TryGetValue(id, out var garden) && garden && !garden.OwnedHere)
+                continue;
+
+            entries.Add(new GardenOwnershipPacket.Entry { GardenId = id, OwnerId = owner });
 
             if (Main.Server.IsRunning)
-                KnownOwners[id] = LocalID;
+                KnownOwners[id] = owner;
         }
-        PendingClaims.Clear();
+        PendingOwnership.Clear();
 
-        SrLogger.LogGarden($"Broadcasting {entries.Count} garden claim(s)");
+        if (entries.Count == 0)
+            return;
+
+        SrLogger.LogGarden($"Broadcasting {entries.Count} garden ownership change(s)");
         Main.SendToAllOrServer(new GardenOwnershipPacket { Entries = entries });
     }
 
@@ -225,7 +630,9 @@ internal static class NetworkGardenManager
 
         foreach (var (gardenId, owner) in KnownOwners.ToArray())
         {
-            if (owner == LocalID || PlayerManager.CheckPlayerExists(owner))
+            // A released garden ("") is not abandoned: its owner comes back to it on waking it,
+            // and anyone awake there has claimed it already.
+            if (string.IsNullOrEmpty(owner) || owner == LocalID || PlayerManager.CheckPlayerExists(owner))
                 continue;
 
             Gardens.TryGetValue(gardenId, out var garden);

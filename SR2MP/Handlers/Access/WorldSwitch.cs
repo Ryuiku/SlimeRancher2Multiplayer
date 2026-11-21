@@ -26,11 +26,18 @@ internal sealed class WorldSwitchHandler : BasePacketHandler<WorldSwitchPacket>
                 var secondary = switchComponentBase.TryCast<WorldStateSecondarySwitch>();
                 var invisible = switchComponentBase.TryCast<WorldStateInvisibleSwitch>();
 
+                // Reset even when the switch throws, so later local changes are still sent.
                 HandlingPacket = true;
-                primary?.SetStateForAll(packet.State, packet.Immediate);
-                secondary?.SetState(packet.State, packet.Immediate);
-                invisible?.SetStateForAll(packet.State, packet.Immediate);
-                HandlingPacket = false;
+                try
+                {
+                    primary?.SetStateForAll(packet.State, packet.Immediate);
+                    secondary?.SetState(packet.State, packet.Immediate);
+                    invisible?.SetStateForAll(packet.State, packet.Immediate);
+                }
+                finally
+                {
+                    HandlingPacket = false;
+                }
             }
         }
         else

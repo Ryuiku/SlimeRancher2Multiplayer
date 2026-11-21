@@ -94,6 +94,15 @@ public sealed class SR2MPServer
             NetworkManager.Start(port, enableIPv6);
             Port = port;
             timeoutTimer = new Timer(CheckClientTimeouts, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            SR2MP.Shared.Managers.NetworkGordoSlimeManager.Reset();
+            SR2MP.Shared.Managers.NetworkActorManager.KnownOwners.Clear();
+            SR2MP.Shared.Managers.NetworkActorManager.ClearDeferredWorldChanges();
+            SR2MP.Shared.Managers.ReSyncManager.ClearPendingSyncs();
+            SR2MP.Shared.Managers.NetworkDroneManager.CachedOwners.Clear();
+            SR2MP.Shared.Managers.NetworkDroneManager.PendingOwners.Clear();
+            SR2MP.Shared.Managers.NetworkDroneManager.ClearPrograms();
+            SR2MP.Shared.Managers.NetworkTornadoManager.RegisterExisting();
+            MainThreadDispatcher.KeepRunningInBackground();
             InvokeServerStarted();
             MultiplayerUI.Instance.RegisterSystemMessage(
                 "The world is now open to others!",
@@ -153,15 +162,47 @@ public sealed class SR2MPServer
         }
     }
 
+    /// <summary>Packet counts and resends for this endpoint start again, for a player connecting anew.</summary>
+    internal void ForgetSequences(IPEndPoint endPoint)
+        => NetworkManager.ForgetEndpoint(endPoint);
+
     private void OnClientRemoved(ClientInfo client)
-        => MainThreadDispatcher.Instance.Enqueue(() => HandleClientRemoved(client));
+    {
+        try
+        {
+            NetworkManager.ForgetEndpoint(client.EndPoint);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not forget the sequences of {client.PlayerId}: {ex.Message}");
+        }
+
+        MainThreadDispatcher.Instance.Enqueue(() => HandleClientRemoved(client));
+    }
 
     private void HandleClientRemoved(ClientInfo client)
     {
+        // Before the early return below: a player who left on purpose is already gone, but the tornados
+        // their game ran still need the host to take them over or end them.
+        try
+        {
+            SR2MP.Shared.Managers.NetworkTornadoManager.OnClientRemoved(client.EndPoint);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not hand over the tornados of a player who left: {ex.Message}");
+        }
+
         var playerId = client.PlayerId;
         
         var player = PlayerManager.GetPlayer(playerId);
-        if (player == null) return;
+        if (player == null)
+        {
+            // A player who left on purpose was already removed by the leave handler. Their slimes,
+            // drones and gardens still need a new owner, which used to happen only after a timeout.
+            ReassignOwnerlessActors();
+            return;
+        }
 
         PlayerManager.RemovePlayer(playerId);
 
@@ -198,11 +239,23 @@ public sealed class SR2MPServer
             MultiplayerUI.SystemMessageDisconnect
         );
         
+        ReassignOwnerlessActors();
+    }
+
+    private static void ReassignOwnerlessActors()
+    {
         MainThreadDispatcher.Instance.Enqueue(() =>
         {
-            ActorManager.AssignOwnershipOfUnowned();
-            NetworkDroneManager.AssignOwnershipOfUnowned();
-            NetworkGardenManager.AssignOwnershipOfUnowned();
+            try
+            {
+                ActorManager.AssignOwnershipOfUnowned();
+                NetworkDroneManager.AssignOwnershipOfUnowned();
+                NetworkGardenManager.AssignOwnershipOfUnowned();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not reassign actors after a player left: {ex.Message}");
+            }
         });
     }
 
@@ -256,7 +309,44 @@ public sealed class SR2MPServer
             PacketDeduplication.Clear();
             ClientManager.Clear();
             PlayerManager.Clear();
+            SR2MP.Shared.Managers.PlayerCosmeticsManager.Clear();
+
+            // Nobody runs the tornados the clients' games ran any more.
+            try
+            {
+                SR2MP.Shared.Managers.NetworkTornadoManager.OnServerStopped();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not end the relayed tornados: {ex.Message}");
+            }
             NetworkManager.Stop();
+
+            // Actors the other players were simulating are frozen here, and nobody will move them now.
+            // Packets that arrived but were not handled yet are dropped first: an ownership claim
+            // handled after this would freeze its actor again, for good.
+            try
+            {
+                if (MainThreadDispatcher.Instance)
+                    MainThreadDispatcher.Instance.DropServerPackets();
+
+                SR2MP.Shared.Managers.ReSyncManager.ClearPendingSyncs();
+                ActorManager.ReleaseAllToLocal();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not take actors back after closing the server: {ex.Message}");
+            }
+
+            // Gardens another player was growing are switched off here; switch them back on.
+            try
+            {
+                SR2MP.Shared.Managers.NetworkGardenManager.OnDisconnected();
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not reset gardens after closing the server: {ex.Message}");
+            }
             NetworkStringPool.Clear();
             ApiHandlers.ClearNetIds();
 

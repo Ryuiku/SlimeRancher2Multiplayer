@@ -11,12 +11,17 @@ internal sealed class GardenUpdatePacket : IPacket
         public float StoredWater;
         public bool NextSpawnRipens;
 
+        // Where the garden's saved data sits: a game that does not have the garden loaded finds
+        // its saved data by this position, the way the game itself does.
+        public Vector3 Position;
+
         public readonly void Serialise(PacketWriter writer)
         {
             writer.WriteString(GardenId);
             writer.WriteDouble(NextSpawnTime);
             writer.WriteFloat(StoredWater);
             writer.WriteBool(NextSpawnRipens);
+            writer.WriteVector3(Position);
         }
 
         public void Deserialise(PacketReader reader)
@@ -25,6 +30,7 @@ internal sealed class GardenUpdatePacket : IPacket
             NextSpawnTime = reader.ReadDouble();
             StoredWater = reader.ReadFloat();
             NextSpawnRipens = reader.ReadBool();
+            Position = reader.ReadVector3();
         }
     }
 

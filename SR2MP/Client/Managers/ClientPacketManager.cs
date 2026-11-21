@@ -98,6 +98,26 @@ internal sealed class ClientPacketManager
         }
         else
         {
+            // Never acknowledge a chunk that can't be stored.
+            if (chunkIndex >= totalChunks)
+            {
+                SrLogger.LogWarning($"Invalid chunk parameters: index={chunkIndex}, total={totalChunks}");
+                return;
+            }
+
+            if (reliability.HasFlag(PacketReliability.Reliable))
+            {
+                // A resent chunk of a packet we already processed: the sender missed our ack, repeat it.
+                if (PacketDeduplication.WasProcessed(new PacketKey(packetTypeHeader, packetId, serverEp)))
+                {
+                    SendAck(packetId, packetTypeHeader);
+                    return;
+                }
+
+                // Acknowledge every chunk so the sender only resends the chunks that went missing.
+                SendAck(packetId, packetTypeHeader, chunkIndex);
+            }
+
             var chunkData = ArrayPool<byte>.Shared.Rent(trueChunkLength);
             data.AsSpan(HeaderSize, trueChunkLength).CopyTo(chunkData);
 
@@ -116,7 +136,7 @@ internal sealed class ClientPacketManager
             try
             {
                 var ackPacket = reader.ReadPacket<AckPacket>();
-                Client.HandleAck(serverEp, ackPacket.PacketId, ackPacket.OriginalPacketType);
+                Client.HandleAck(serverEp, ackPacket.PacketId, ackPacket.OriginalPacketType, ackPacket.ChunkIndex);
             }
             finally
             {
@@ -133,9 +153,11 @@ internal sealed class ClientPacketManager
             SendAck(packetId, packetTypeHeader);
         }
 
+        // Only reliable packets get resent, so only they can arrive twice. Deduplicating unreliable
+        // packets (actor/player updates) dropped real updates whenever the 16 bit packet id wrapped around.
         var packetKey = new PacketKey(packetTypeHeader, packetId, serverEp);
 
-        if (PacketDeduplication.IsDuplicate(packetKey))
+        if (packetReliability.HasFlag(PacketReliability.Reliable) && PacketDeduplication.IsDuplicate(packetKey))
         {
             PacketReader.Return(reader);
             SrLogger.LogPacketSize($"Duplicate packet ignored: {packetType} (packetId={packetId})");
@@ -171,7 +193,7 @@ internal sealed class ClientPacketManager
         }
     }
 
-    private void SendAck(ushort packetId, byte packetType)
+    private void SendAck(ushort packetId, byte packetType, ushort chunkIndex = AckPacket.WholePacket)
     {
         if (!Main.Client.IsConnected)
             return;
@@ -179,7 +201,8 @@ internal sealed class ClientPacketManager
         var ackPacket = new AckPacket
         {
             PacketId = packetId,
-            OriginalPacketType = packetType
+            OriginalPacketType = packetType,
+            ChunkIndex = chunkIndex
         };
 
         Client.SendPacket(ackPacket);

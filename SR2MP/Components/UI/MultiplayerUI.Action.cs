@@ -10,6 +10,12 @@ internal sealed partial class MultiplayerUI
 {
     public void Host(ushort port)
     {
+        // Every way of hosting starts without a code and sets its own afterwards.
+        hostJoinCode = string.Empty;
+        hostJoinCodeCopyStatus = string.Empty;
+        hostJoinCodePending = false;
+        hostJoinCodeIsManual = false;
+
         MenuEUtil.CloseOpenMenu();
         Main.Server.Start(port, true);
         Main.SetConfigValue("host_port", hostLocalPortInput);
@@ -28,7 +34,29 @@ internal sealed partial class MultiplayerUI
         }
 
         Host(localPort);
-        hostJoinCode = JoinCode.Encode(address, tunnelPort);
+        hostJoinCode = JoinCode.EncodeWithLan(address, tunnelPort, localPort);
+    }
+
+    private void TryHostSimple(ushort port)
+    {
+        hostManualError = string.Empty;
+        hostJoinCode = string.Empty;
+        hostJoinCodeCopyStatus = string.Empty;
+
+        Host(port);
+
+        hostJoinCodePending = true;
+        AutoHost.BeginManualJoinCode(port, code =>
+        {
+            hostJoinCodePending = false;
+
+            // The server may have been stopped or restarted on another port while we were looking up the address.
+            if (code != null && Main.Server.IsRunning && Main.Server.Port == port && string.IsNullOrEmpty(hostJoinCode))
+            {
+                hostJoinCode = code;
+                hostJoinCodeIsManual = true;
+            }
+        });
     }
 
     internal void StartAutoHost()
@@ -65,6 +93,7 @@ internal sealed partial class MultiplayerUI
 
         ip = ResolveIp(ip);
 
+        Main.Client.FallbackEndPoint = null;
         Main.Client.Connect(ip, port);
 
         Main.SetConfigValue("recent_ip", joinIpInput);
@@ -75,7 +104,7 @@ internal sealed partial class MultiplayerUI
     {
         joinCodeError = string.Empty;
 
-        if (!JoinCode.TryDecode(joinCodeInput, out var address, out var port, out var error))
+        if (!JoinCode.TryDecode(joinCodeInput, out var address, out var port, out var lanEndPoint, out var error))
         {
             joinCodeError = error;
             return;
@@ -83,6 +112,23 @@ internal sealed partial class MultiplayerUI
 
         joinIpInput = address.ToString();
         joinPortInput = port.ToString();
+
+        // On the host's home network, connect to their LAN address first: most routers can't
+        // connect to their own public IP. If that doesn't answer, fall back to the public address.
+        if (lanEndPoint != null && JoinCode.IsOnSameLan(lanEndPoint.Address))
+        {
+            SrLogger.LogMessage("Trying the host's local network address first...",
+                $"Join code: trying LAN {lanEndPoint} before {address}:{port}");
+
+            MenuEUtil.CloseOpenMenu();
+            Main.Client.FallbackEndPoint = new IPEndPoint(address, port);
+            Main.Client.Connect(lanEndPoint.Address.ToString(), lanEndPoint.Port, SR2MP.Client.SR2MPClient.LanConnectionTimeoutSeconds);
+
+            Main.SetConfigValue("recent_ip", joinIpInput);
+            Main.SetConfigValue("recent_port", joinPortInput);
+            return;
+        }
+
         Connect(joinIpInput, port);
     }
 
@@ -159,6 +205,14 @@ internal sealed partial class MultiplayerUI
 
         chatHidden = !chatHidden;
         internalChatToggle = true;
+
+        if (chatHidden)
+        {
+            // Hidden chat can't be focused. Leaving these set made the chat box keep swallowing keys.
+            isChatFocused = false;
+            if (activeInputId == "chat_input")
+                activeInputId = string.Empty;
+        }
 
         if (chatHidden && disabledInput)
         {

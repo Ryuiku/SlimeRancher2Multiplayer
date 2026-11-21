@@ -25,7 +25,8 @@ internal sealed class PlayerUpdateHandler : BasePacketHandler<PlayerUpdatePacket
             packet.ForwardSpeed,
             packet.Sprinting,
             packet.LookY,
-            packet.SceneGroup
+            packet.SceneGroup,
+            packet.VacMode
         );
 
         return true;

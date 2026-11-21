@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using SR2MP.Packets.LandPlots;
 
 namespace SR2MP.Patches.LandPlots;
@@ -10,12 +10,21 @@ internal static class OnFeederSetSpeed
     {
         if (HandlingPacket) return;
 
-        var packet = new AutoFeederSpeedPacket()
+        try
         {
-            Speed = speed,
-            ID = __instance.gameObject.GetComponentInParent<LandPlotLocation>()._id
-        };
+            var location = __instance.GetComponentInParent<LandPlotLocation>(true);
+            if (!location || string.IsNullOrEmpty(location._id) || __instance._model == null)
+                return;
 
-        Main.SendToAllOrServer(packet);
+            Main.SendToAllOrServer(new AutoFeederSpeedPacket
+            {
+                Speed = speed,
+                ID = location._id,
+            });
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not send a feeder speed: {ex.Message}");
+        }
     }
 }

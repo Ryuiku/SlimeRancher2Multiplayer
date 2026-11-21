@@ -1,10 +1,13 @@
+using System.Collections;
 using System.Net;
 using Il2CppMonomiPark.SlimeRancher.Economy;
 using SR2MP.Api;
 using SR2MP.Components.Player;
+using SR2MP.Components.UI;
 using SR2MP.Packets.Internal;
 using SR2MP.Packets.Player;
 using SR2MP.Packets.Utils;
+using SR2MP.Shared.Managers;
 
 namespace SR2MP.Handlers.Internal;
 
@@ -33,13 +36,42 @@ internal sealed class ConnectionApproveHandler : BasePacketHandler<ConnectionApp
 
             // todo: resync players too
             foreach (var (id, username) in packet.OtherPlayers)
-                SpawnPlayer(id, username);
+            {
+                // After a rejoin the host can still list this player's old entry.
+                if (id == packet.PlayerId || id == LocalID)
+                    continue;
+
+                try
+                {
+                    SpawnPlayer(id, username);
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogWarning($"Could not create the avatar for player {id}: {ex.Message}");
+                }
+            }
+
+            StartCoroutine(WarnIfWorldNotLoaded());
         }
 
+        // All of the host's currencies; the two fixed ones only when the host sent no list.
         HandlingPacket = true;
-        SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>(), packet.Money);
-        SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>(), packet.RainbowMoney);
-        HandlingPacket = false;
+        try
+        {
+            if (packet.Currencies.Count == 0 || SR2MP.Shared.Utils.CurrencySnapshot.Apply(packet.Currencies) == 0)
+            {
+                SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[0].Cast<ICurrency>(), packet.Money);
+                SceneContext.Instance.PlayerState._model.SetCurrency(GameContext.Instance.LookupDirector._currencyList[1].Cast<ICurrency>(), packet.RainbowMoney);
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not apply the host's currencies: {ex.Message}");
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         foreach (var data in packet.NetData)
         {
@@ -51,8 +83,40 @@ internal sealed class ConnectionApproveHandler : BasePacketHandler<ConnectionApp
         return false;
     }
 
+    // If the host's actors never arrive, this client can't sync any slimes or items (on purpose, see
+    // NetworkActorManager.CanSendActorChanges), so tell the player instead of failing silently.
+    private static IEnumerator WarnIfWorldNotLoaded()
+    {
+        var waited = 0f;
+
+        while (waited < 90f)
+        {
+            if (!Main.Client.IsConnected || NetworkActorManager.InitialActorsLoaded)
+                yield break;
+
+            waited += UnityEngine.Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        if (!Main.Client.IsConnected || NetworkActorManager.InitialActorsLoaded)
+            yield break;
+
+        SrLogger.LogWarning("The host's world data has not arrived after 90 seconds, slimes and items are not syncing.");
+        MultiplayerUI.Instance.RegisterSystemMessage(
+            "The world didn't finish loading, slimes and items won't sync. Try Resync, or rejoin.",
+            $"SYSTEM_WORLD_NOT_LOADED_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            MultiplayerUI.SystemMessageDisconnect);
+    }
+
     private static void SpawnPlayer(string id, string name)
     {
+        if (PlayerObjects.TryGetValue(id, out var stale))
+        {
+            if (stale)
+                Object.Destroy(stale);
+            PlayerObjects.Remove(id);
+        }
+
         var playerObject = Object.Instantiate(PlayerPrefab).GetComponent<NetworkPlayer>();
         playerObject.gameObject.SetActive(true);
         playerObject.ID = id;

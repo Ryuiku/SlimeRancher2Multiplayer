@@ -120,15 +120,22 @@ internal sealed class NetworkManager
             ushort sequenceNumber = 0;
 
             if (packetReliability.HasFlag(PacketReliability.Ordered))
-                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, data[0], endPoint) ?? 0;
+                sequenceNumber = reliabilityManager?.GetNextSequenceNumber(channel, data[0], endPoint, packetReliability) ?? 0;
 
-            var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, out var packetId);
+            var splitResult = PacketChunkManager.SplitPacket(data, packetReliability, channel, sequenceNumber, endPoint, out var packetId);
 
-            if (packetReliability.HasFlag(PacketReliability.Reliable))
-                reliabilityManager?.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability);
+            // Reliable packets are tracked until acknowledged. The reliability manager sends large ones
+            // itself (paced), and anything queued behind a large one, so they arrive in order.
+            var sendNow = true;
 
-            for (var i = 0; i < splitResult.Count; i++)
-                SendRaw(splitResult.Chunks[i], endPoint);
+            if (packetReliability.HasFlag(PacketReliability.Reliable) && reliabilityManager != null)
+                sendNow = reliabilityManager.TrackPacket(splitResult, endPoint, packetId, data[0], packetReliability);
+
+            if (sendNow)
+            {
+                for (var i = 0; i < splitResult.Count; i++)
+                    SendRaw(splitResult.Chunks[i], endPoint);
+            }
 
             if (!packetReliability.HasFlag(PacketReliability.Reliable))
                 splitResult.Dispose();
@@ -166,8 +173,11 @@ internal sealed class NetworkManager
             udpClient?.Client.SendTo(data.Array, data.Offset, data.Count, SocketFlags.None, endPoint);
     }
 
-    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType)
-        => reliabilityManager?.HandleAck(sender, packetId, packetType);
+    public void ForgetEndpoint(IPEndPoint endPoint, bool outgoingOnly = false)
+        => reliabilityManager?.ForgetEndpoint(endPoint, outgoingOnly);
+
+    public void HandleAck(IPEndPoint sender, ushort packetId, byte packetType, ushort chunkIndex)
+        => reliabilityManager?.HandleAck(sender, packetId, packetType, chunkIndex);
 
     public bool ShouldProcessOrderedPacket(IPEndPoint sender, ushort sequenceNumber, byte packetType,
         NetworkChannel channel, PacketReliability reliability, Action? processAction = null)

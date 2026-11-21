@@ -10,6 +10,8 @@ internal sealed partial class MultiplayerUI
     
     private string hostJoinCode = string.Empty;
     private string hostJoinCodeCopyStatus = string.Empty;
+    private bool hostJoinCodePending;
+    private bool hostJoinCodeIsManual;
     
     private string hostAutoError = string.Empty;
     private string hostManualError = string.Empty;
@@ -93,7 +95,7 @@ internal sealed partial class MultiplayerUI
         {
             GUI.enabled = !hostAutoInProgress;
             if (GUI.Button(CalculateButtonLayout(6), "Start Server"))
-                Host(hostPort);
+                TryHostSimple(hostPort);
             GUI.enabled = true;
         }
         else
@@ -121,15 +123,17 @@ internal sealed partial class MultiplayerUI
 
     private void DrawHostingJoinCode()
     {
-        if (hostTab == 1) return;
-
         if (string.IsNullOrWhiteSpace(hostJoinCode))
         {
-            DrawText("Join code unavailable");
+            DrawText(hostJoinCodePending ? "Getting join code..." : "Join code unavailable");
             return;
         }
 
         DrawText("Join code:");
+
+        // Manual hosting: we can't check the router, so say what the code relies on.
+        if (hostJoinCodeIsManual)
+            DrawText("Works on your own network, and over the internet if this port is forwarded.");
 
         GUI.enabled = false;
         DrawSafeTextInput("join_code_view", CalculateInputLayout(6, 2, 1), Main.StreamerMode ? "Streamer Mode" : hostJoinCode);

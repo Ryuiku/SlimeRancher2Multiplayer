@@ -11,12 +11,30 @@ internal sealed class InitialPuzzleSlotsHandler : BasePacketHandler<InitialPuzzl
 {
     protected override bool Handle(InitialPuzzleSlotsPacket packet, IPEndPoint? _)
     {
-        HandlingPacket = true;
+        var hostIds = new HashSet<string>();
+        foreach (var slot in packet.Slots)
+            hostIds.Add(slot.ID);
+
+        SR2MP.Shared.Utils.HostWorldState.DropEntriesHostLacks(
+            GameState.slots, hostIds, m => m.gameObj, "puzzle slots");
 
         foreach (var slot in packet.Slots)
-            NetworkPuzzleSlotManager.ApplyState(slot.ID, slot.Filled);
-
-        HandlingPacket = false;
+        {
+            // One slot failing must not stop every slot after it from loading.
+            HandlingPacket = true;
+            try
+            {
+                NetworkPuzzleSlotManager.ApplyState(slot.ID, slot.Filled);
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Could not load puzzle slot {slot.ID}: {ex.Message}");
+            }
+            finally
+            {
+                HandlingPacket = false;
+            }
+        }
 
         return false;
     }

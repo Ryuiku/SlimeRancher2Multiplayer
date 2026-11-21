@@ -24,5 +24,16 @@ internal static class OnDroneCloudExtractionAssigned
             TypeId = type != null ? NetworkActorManager.GetPersistentID(type) : -1,
             Count = count
         });
+
+        // The queue itself, so every game (loaded or not) and the host's save hold the same items
+        // whatever way the game fills it.
+        try
+        {
+            NetworkDroneManager.SendExtractionQueue(stationModel);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Failed to send cloud extraction queue: {ex.Message}");
+        }
     }
 }

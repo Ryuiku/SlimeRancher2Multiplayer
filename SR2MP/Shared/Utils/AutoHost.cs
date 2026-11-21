@@ -54,6 +54,34 @@ internal static class AutoHost
         });
     }
 
+    /// <summary>
+    /// For manual hosting: looks up the public address and builds a join code for a port the host
+    /// forwarded themselves. The code also carries the LAN address, so it works for players on
+    /// the host's own network even when the port is not forwarded.
+    /// </summary>
+    internal static void BeginManualJoinCode(ushort port, Action<string?> onCompleted)
+    {
+        ArgumentNullException.ThrowIfNull(onCompleted, nameof(onCompleted));
+        Task.Run(() =>
+        {
+            string? code = null;
+            try
+            {
+                var externalIp = TryGetExternalIp();
+                if (IsUsableIp(externalIp))
+                    code = JoinCode.EncodeWithLan(externalIp!, port, port);
+                else
+                    SrLogger.LogWarning("Manual host: could not determine the public IP, so there is no join code.");
+            }
+            catch (Exception ex)
+            {
+                SrLogger.LogWarning($"Manual host: could not build a join code: {ex.Message}");
+            }
+
+            MainThreadDispatcher.Instance.Enqueue(() => onCompleted(code));
+        });
+    }
+
     private static void StopRefresh()
     {
         lock (RefreshLock)
@@ -96,7 +124,7 @@ internal static class AutoHost
                                               "\nYou need to use PlayIt or port forward.");
 
             Firewall.AddException(port);
-            var joinCode = JoinCode.Encode(externalIp!, port);
+            var joinCode = JoinCode.EncodeWithLan(externalIp!, port, port);
             SrLogger.LogMessage("UPnP: Join code generated!", $"UPnP: Join code generated for {externalIp}:{port}.");
 
             StartRefresh(device, port);

@@ -10,19 +10,30 @@ internal static class PacketDeduplication
 
     private static readonly TimeSpan PacketMemoryDuration = TimeSpan.FromSeconds(30);
 
-    private static int processCounter;
-    private const int CleanupInterval = 100;
+    // Cleanup runs on elapsed time. It used to run every 100 packets, so on a quiet connection
+    // records stayed far longer than the 30 seconds they are meant to.
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(5);
+    private static long lastCleanupTicks;
 
     public static bool IsDuplicate(PacketKey key)
     {
-        if (++processCounter >= CleanupInterval)
+        var now = DateTime.UtcNow;
+        var last = Interlocked.Read(ref lastCleanupTicks);
+
+        if (now.Ticks - last >= CleanupInterval.Ticks
+            && Interlocked.CompareExchange(ref lastCleanupTicks, now.Ticks, last) == last)
         {
-            processCounter = 0;
             Cleanup();
         }
 
-        return !ProcessedPackets.TryAdd(key, DateTime.UtcNow);
+        return !ProcessedPackets.TryAdd(key, now);
     }
+
+    /// <summary>
+    /// Returns true if a packet with this key was already fully received and processed recently.
+    /// Does not record anything.
+    /// </summary>
+    public static bool WasProcessed(PacketKey key) => ProcessedPackets.ContainsKey(key);
 
     // public static void MarkProcessed(PacketKey key)
     //     => ProcessedPackets[key] = DateTime.UtcNow;

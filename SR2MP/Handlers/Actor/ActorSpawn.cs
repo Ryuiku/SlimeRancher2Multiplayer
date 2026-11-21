@@ -12,6 +12,30 @@ internal sealed class ActorSpawnHandler : BasePacketHandler<ActorSpawnPacket>
 {
     protected override bool Handle(ActorSpawnPacket packet, IPEndPoint? _)
     {
+        // While this game is loading a zone the spawn is applied afterwards. It is still passed on
+        // to the other players right away.
+        if (NetworkActorManager.DeferDuringSceneLoad(() => Apply(packet, true)))
+        {
+            NetworkActorManager.RememberOwner(packet.ActorId.Value, packet.OwnerId);
+            return true;
+        }
+
+        return Apply(packet, false);
+    }
+
+    private static bool Apply(ActorSpawnPacket packet, bool fromQueue)
+    {
+        // While the spawn waited in the queue the actor may have changed hands, or been destroyed.
+        var ownerId = packet.OwnerId;
+        if (fromQueue)
+        {
+            if (!NetworkActorManager.KnownOwners.TryGetValue(packet.ActorId.Value, out var current))
+                current = null;
+
+            if (!string.IsNullOrEmpty(current))
+                ownerId = current!;
+        }
+
         if (ActorManager.Actors.ContainsKey(packet.ActorId.Value))
         {
             SrLogger.LogDebug($"Actor {packet.ActorId.Value} already exists");
@@ -23,13 +47,15 @@ internal sealed class ActorSpawnHandler : BasePacketHandler<ActorSpawnPacket>
             packet.FirstAppearance, packet.SecondAppearance, packet.Emotions, packet.Sleeping,
             packet.SpawnType == (byte)ActorSpawnType.Gadget ? packet.ChargeupTime : 0);
 
+        NetworkActorManager.RememberOwner(packet.ActorId.Value, ownerId);
+
         if (actor == null)
             return true;
         
         // Gadgets have no NetworkActor component
         if (actor.TryGetNetworkComponent(out var networkComponent))
         {
-            networkComponent.CurrentOwnerId = packet.OwnerId;
+            networkComponent.CurrentOwnerId = ownerId;
             networkComponent.LocallyOwned = false;
             networkComponent.CachedLocallyOwned = false;
         }
@@ -47,8 +73,8 @@ internal sealed class ActorSpawnHandler : BasePacketHandler<ActorSpawnPacket>
             case (byte)ActorSpawnType.Slime when packet.Radiancy != (byte)ActorAppearanceType.Default:
             {
                 var slime = actor.TryCast<SlimeModel>();
-                if (slime != null)
-                    NetworkActorManager.ApplyRadiancy(slime, (ActorAppearanceType)packet.Radiancy);
+                if (slime != null && !NetworkActorManager.ApplyRadiancy(slime, (ActorAppearanceType)packet.Radiancy))
+                    NetworkActorManager.PendingRadiancy[packet.ActorId.Value] = (ActorAppearanceType)packet.Radiancy;
                 break;
             }
         }

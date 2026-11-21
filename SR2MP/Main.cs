@@ -164,12 +164,40 @@ public sealed class Main : StarlightExpansionV01
 
     internal static void SendToAllOrServer<T>(T packet) where T : IPacket
     {
+        // A joining player is still in their own save until the host's world has been applied.
+        // What happens there must not reach the host: several packets carry absolute values (a
+        // refinery count, a plot's upgrades) and would overwrite the host's world with that save's.
+        if (!Server.IsRunning && Client.IsConnected
+            && !SR2MP.Shared.Managers.NetworkActorManager.InitialActorsLoaded
+            && !AllowedBeforeWorldLoaded(packet.Type))
+            return;
+
         if (Client.IsConnected)
             Client.SendPacket(packet);
 
         if (Server.IsRunning)
             Server.SendToAll(packet);
     }
+
+    private static bool AllowedBeforeWorldLoaded(SR2MP.Packets.Utils.PacketType type) => type is
+        SR2MP.Packets.Utils.PacketType.Connect or
+        SR2MP.Packets.Utils.PacketType.Heartbeat or
+        SR2MP.Packets.Utils.PacketType.ChatMessage or
+        SR2MP.Packets.Utils.PacketType.ResyncRequest or
+        SR2MP.Packets.Utils.PacketType.PlayerJoin or
+        SR2MP.Packets.Utils.PacketType.PlayerLeave or
+        SR2MP.Packets.Utils.PacketType.PlayerUpdate or
+        SR2MP.Packets.Utils.PacketType.PlayerFX or
+        SR2MP.Packets.Utils.PacketType.MovementSound or
+        SR2MP.Packets.Utils.PacketType.PlayerGadgetUpdate or
+        SR2MP.Packets.Utils.PacketType.ModSyncAck or
+        SR2MP.Packets.Utils.PacketType.ApiCall or
+        SR2MP.Packets.Utils.PacketType.ReservedAcknowledge or
+        SR2MP.Packets.Utils.PacketType.ReservedCompression or
+        // A player's own look, never the host's world: sent from the moment of joining.
+        SR2MP.Packets.Utils.PacketType.PlayerCosmetics;
+
+    private static void ResetSessionPlayerState() => IsInRanchHouse = false;
 
     /// <inheritdoc/>
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)
@@ -190,6 +218,19 @@ public sealed class Main : StarlightExpansionV01
 
                 Server.OnServerStarted += () => CheatsEnabled = AllowCheats;
 
+                // The ranch house screen sets a flag that makes a client ignore the host clock. If
+                // that screen never reported closing, the flag would carry into the next session.
+                Server.OnServerStarted += ResetSessionPlayerState;
+                Client.OnConnected += _ => ResetSessionPlayerState();
+                Client.OnDisconnected += ResetSessionPlayerState;
+                Client.OnDisconnected += SR2MP.Client.Managers.NetworkWeatherManager.ResetSession;
+
+                // Copies of other players' tangle stalks and vines belong to one session.
+                Server.OnServerStarted += SR2MP.Shared.Managers.NetworkTangleManager.OnServerStarted;
+                Client.OnConnected += _ => SR2MP.Shared.Managers.NetworkTangleManager.ResetSession();
+                Client.OnDisconnected += SR2MP.Shared.Managers.NetworkTangleManager.ResetSession;
+                PlayerManager.OnPlayerAdded += _ => SR2MP.Shared.Managers.NetworkTangleManager.RepeatSoon();
+
                 Application.quitting += new Action(() =>
                 {
                     DiscordRPCManager.Shutdown();
@@ -204,6 +245,34 @@ public sealed class Main : StarlightExpansionV01
                 break;
 
             case "MainMenuEnvironment":
+                // The game can drop to the main menu by itself (a failed zone load does). The
+                // session must not keep running with no world behind it.
+                try
+                {
+                    if (Server.IsRunning)
+                    {
+                        SrLogger.LogWarning("Back at the main menu while hosting: closing the server.");
+                        Server.Close();
+                    }
+
+                    if (Client.IsConnected)
+                    {
+                        SrLogger.LogWarning("Back at the main menu while connected: disconnecting.");
+                        Client.Disconnect();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SrLogger.LogError($"Could not end the session at the main menu: {ex.Message}");
+                }
+
+                // The player object of that world is gone, and with it any freeze on it.
+                SR2MP.Shared.Utils.FreezeLog.ResetControllerState();
+
+                // The save is left: actor ids repeat in the next one.
+                SR2MP.Shared.Managers.NetworkActorManager.PendingRadiancy.Clear();
+                SR2MP.Shared.Managers.NetworkAmmoManager.ClearAmmoCache();
+
                 InitializePlayer("BeatrixMainMenu", 0.85f);
                 break;
         }

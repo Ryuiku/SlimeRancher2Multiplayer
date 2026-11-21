@@ -8,8 +8,42 @@ namespace SR2MP.Patches.GordoSlime;
 [HarmonyPatch(typeof(GordoEat), nameof(GordoEat.DoEat))]
 internal static class OnGordoSlimeFed
 {
-    public static void Postfix(GordoEat __instance)
+    // Every machine that has the gordo loaded has its own copy of the food, and each copy used to
+    // feed the gordo and report the new count. Only the machine that simulates the food feeds it.
+    public static bool Prefix([HarmonyArgument(0)] GameObject obj, out bool __state)
     {
+        __state = true;
+
+        if (HandlingPacket || (!Main.Server.IsRunning && !Main.Client.IsConnected))
+            return true;
+
+        var networkActor = obj ? obj.GetComponent<SR2MP.Components.Actor.NetworkActor>() : null;
+        if (networkActor != null && !networkActor.LocallyOwned)
+        {
+            __state = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    public static void Postfix(GordoEat __instance, bool __state)
+    {
+        if (!__state)
+            return;
+
+        // This game fed the last piece, so it is the one that gives out the rewards.
+        try
+        {
+            var model = __instance.GordoModel;
+            if (model != null && model.targetCount > 0 && model.GordoEatenCount >= model.targetCount)
+                NetworkGordoSlimeManager.MarkLocalFinisher(__instance.Id);
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not check whether gordo {__instance.Id} is full: {ex.Message}");
+        }
+
         var packet = new GordoSlimeFeedPacket
         {
             ID = __instance.Id,

@@ -7,7 +7,33 @@ internal static class NetworkGordoSlimeManager
     private static readonly HashSet<string> PoppedGordoSlimeIds = new();
     private static readonly HashSet<string> RewardsGivenIds = new();
 
+    // Gordos whose last piece of food was eaten here (LocalFinishers) or on another player's game
+    // (RemoteFinishers). Only the game that fed the last piece gives out the rewards.
+    private static readonly HashSet<string> LocalFinishers = new();
+    private static readonly HashSet<string> RemoteFinishers = new();
+
+    // The value the game itself stores as a gordo's eaten count once it has burst (GordoModel.HasPopped).
+    internal const int PoppedEatenCount = -1;
+
     internal static void MarkPopped(string id) => PoppedGordoSlimeIds.Add(id);
+
+    // These sets describe one world. Without clearing them, gordos popped in one session stayed hidden
+    // and gave no rewards in the next world joined or hosted in the same game run.
+    internal static void Reset()
+    {
+        PoppedGordoSlimeIds.Clear();
+        RewardsGivenIds.Clear();
+        LocalFinishers.Clear();
+        RemoteFinishers.Clear();
+    }
+
+    internal static void MarkLocalFinisher(string id) => LocalFinishers.Add(id);
+
+    internal static bool IsLocalFinisher(string id) => LocalFinishers.Contains(id);
+
+    internal static void MarkRemoteFinisher(string id) => RemoteFinishers.Add(id);
+
+    internal static bool IsRemoteFinisher(string id) => RemoteFinishers.Contains(id);
 
     internal static bool HasGivenRewards(string id) => RewardsGivenIds.Contains(id);
 

@@ -13,11 +13,32 @@ internal sealed class PlayerUpgradeHandler : BasePacketHandler<PlayerUpgradePack
         var model = SceneContext.Instance.PlayerState._model.upgradeModel;
 
         var upgrade = model.upgradeDefinitions.items._items.FirstOrDefault(
-            x => x._uniqueId == packet.UpgradeID);
+            x => x != null && x._uniqueId == packet.UpgradeID);
+
+        // Unknown here: still passed on to the other players.
+        if (upgrade == null)
+            return true;
 
         HandlingPacket = true;
-        model.IncrementUpgradeLevel(upgrade);
-        HandlingPacket = false;
+        try
+        {
+            // Up to the sender's level, not "one more": a player who already has it stays where they are.
+            for (var i = 0; i < 16; i++)
+            {
+                var before = model.GetUpgradeLevel(upgrade);
+                if (before >= packet.Level)
+                    break;
+
+                model.IncrementUpgradeLevel(upgrade);
+
+                if (model.GetUpgradeLevel(upgrade) <= before)
+                    break;
+            }
+        }
+        finally
+        {
+            HandlingPacket = false;
+        }
 
         return true;
     }

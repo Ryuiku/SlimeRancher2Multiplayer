@@ -25,6 +25,11 @@ internal static class OnActorSpawn
         if (!actor)
             yield break;
 
+        // A joining client that hasn't received the host's world yet would announce actors with ids
+        // that belong to other actors on the host.
+        if (!NetworkActorManager.CanSendActorChanges)
+            yield break;
+
         var id = actor.GetComponent<IdentifiableActor>().GetActorId();
 
         var packet = new ActorSpawnPacket
@@ -111,19 +116,43 @@ internal static class OnActorSpawn
         if (HandlingPacket) return;
 
         if (!Main.Server.IsRunning && !Main.Client.IsConnected) return;
-        
-        if (NetworkDroneManager.IsDroneModel(__result.GetComponent<IdentifiableActor>()._model)) return;
 
-        var networkActor = __result.AddComponent<NetworkActor>();
-        networkActor.LocallyOwned = true;
-        networkActor.CurrentOwnerId = LocalID;
+        // The game also calls this for objects that are not actors (nonActorOk), and it can return
+        // nothing. An exception here would make the game receive no object at all, in the middle of
+        // whatever it was doing, so this must never throw.
+        try
+        {
+            if (!__result || !original)
+                return;
 
-        var actorType = NetworkActorManager.GetPersistentID(original.GetComponent<Identifiable>().identType);
-        var sceneGroupId = NetworkSceneManager.GetPersistentID(sceneGroup);
+            var identifiableActor = __result.GetComponent<IdentifiableActor>();
+            if (!identifiableActor || identifiableActor._model == null)
+                return;
 
-        ActorManager.Actors[__result.GetComponent<IdentifiableActor>()._model.actorId.Value] =
-            __result.GetComponent<IdentifiableActor>()._model;
+            var identifiable = original.GetComponent<Identifiable>();
+            if (!identifiable || identifiable.identType == null)
+                return;
 
-        StartCoroutine(SpawnOverNetwork(actorType, (byte)sceneGroupId, __result, appearance, secondAppearance));
+            var model = identifiableActor._model;
+
+            if (NetworkDroneManager.IsDroneModel(model)) return;
+
+            var networkActor = __result.GetComponent<NetworkActor>();
+            if (!networkActor)
+                networkActor = __result.AddComponent<NetworkActor>();
+            networkActor.LocallyOwned = true;
+            networkActor.CurrentOwnerId = LocalID;
+
+            var actorType = NetworkActorManager.GetPersistentID(identifiable.identType);
+            var sceneGroupId = NetworkSceneManager.GetPersistentID(sceneGroup);
+
+            ActorManager.Actors[model.actorId.Value] = model;
+
+            StartCoroutine(SpawnOverNetwork(actorType, (byte)sceneGroupId, __result, appearance, secondAppearance));
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogWarning($"Could not register a newly created actor for multiplayer: {ex.Message}");
+        }
     }
 }

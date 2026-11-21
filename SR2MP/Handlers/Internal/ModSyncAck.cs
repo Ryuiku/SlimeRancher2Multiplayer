@@ -13,6 +13,27 @@ internal sealed class ModSyncAckHandler : BasePacketHandler<ModSyncPacket>
 {
     protected override bool Handle(ModSyncPacket packet, IPEndPoint? clientEp)
     {
+        // Everyone in a session needs the same Ranching Together build: the network messages
+        // differ between versions, so a mismatched player would desync instead of failing cleanly.
+        var clientVersion = packet.Mods.Remove(ModSyncPacket.SelfVersionKey, out var self)
+            ? self.Version
+            : "0.3.9 or older (the original mod)";
+
+        if (clientVersion != BuildInfo.Version)
+        {
+            SrLogger.LogMessage($"Turned away a player on Ranching Together {clientVersion} (host runs {BuildInfo.Version})");
+
+            var versionDeny = new ConnectionDenyPacket
+            {
+                Reason = $"The host runs Ranching Together {BuildInfo.Version} and you run {clientVersion}. " +
+                         $"Everyone needs the same version: {BuildInfo.Releases}"
+            };
+            Main.Server.SendToClient(versionDeny, clientEp!);
+            Main.Server.ClientManager.RemoveClient(clientEp!);
+
+            return false;
+        }
+
         var clientNeeds = new List<string>();
         var hostNeeds = new List<string>();
 
@@ -68,7 +89,8 @@ internal sealed class ModSyncAckHandler : BasePacketHandler<ModSyncPacket>
             Money = money,
             RainbowMoney = rainbowMoney,
             AllowCheats = Main.AllowCheats,
-            NetData = netData
+            NetData = netData,
+            Currencies = SR2MP.Shared.Utils.CurrencySnapshot.Collect()
         };
 
         // The connectAck is different because of initialJoin, otherwise another PlayerJoin request will be sent
