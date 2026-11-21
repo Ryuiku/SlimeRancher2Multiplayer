@@ -1,4 +1,5 @@
 using System.Net;
+using Il2CppMonomiPark.SlimeRancher.DataModel;
 using SR2MP.Handlers.Internal;
 using SR2MP.Packets.LandPlots;
 using SR2MP.Packets.Utils;
@@ -71,27 +72,17 @@ internal sealed class NewLandPlotHandler : BasePacketHandler<NewLandPlotPacket>
                 model.upgrades?.Clear();
                 model.resourceGrowerDefinition = null;
 
-                // Storage is kept per kind, not per plot type, so the old silo, collector and
-                // feeder contents would show up again in a new plot of the same type.
-                // The entries stay (a storage without slots breaks the plot for a joining player),
-                // only their contents go.
-                if (model.siloAmmo != null)
+                // The game gives a replaced plot a fresh model, so its storages start empty and
+                // are sized by the new plot when it loads. Keeping the old plot's storages (only
+                // emptied) kept their slot count too: a storage with more saved slots than the new
+                // plot's made the area fail to load and sent the player to the main menu. Missing
+                // storages are fine: the game makes them when the plot loads, and joiners skip them.
+                model.siloAmmo = new CppCollections.Dictionary<string, AmmoModel>();
+
+                if (model.siloStorageIndices != null)
                 {
-                    foreach (var storage in model.siloAmmo)
-                    {
-                        var slots = storage.value?.Slots;
-                        if (slots == null)
-                            continue;
-
-                        foreach (var slot in slots)
-                        {
-                            if (slot == null)
-                                continue;
-
-                            slot._count = 0;
-                            slot._id = null;
-                        }
-                    }
+                    for (var i = 0; i < model.siloStorageIndices.Length; i++)
+                        model.siloStorageIndices[i] = 0;
                 }
 
                 model.ashUnits = 0f;

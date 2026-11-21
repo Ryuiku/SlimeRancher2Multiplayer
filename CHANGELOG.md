@@ -4,6 +4,15 @@
 
 This fork builds on [Ranching Together](https://github.com/pyeight/SlimeRancher2Multiplayer) 0.3.9 by Shark (py8), with contributions from AlchlcSystm and PinkTarr. It targets Slime Rancher 2 1.3.0, MelonLoader 0.7.3 and Starlight 4.0.4.
 
+## 0.3.9-Patched.2
+
+**Fixes**
+- **Host sent to the main menu when entering the Sanctuary.** A plot's storage could be saved with more slots than the plot really has, and the game failed to load the area with "An error occurred". The extra slots are now cut off when the area loads, so saves that already have this load again (anything in the extra slots is listed in the log). The cause is fixed too: when a player replaced a plot in an area the host didn't have loaded, the old plot's storage was kept. It now starts empty, like the game does.
+- **Players stuck when the host's game closes or hangs.** The host now sends a heartbeat every few seconds. If a player hears nothing from the host for 30 seconds, they leave the world with a message instead of waiting forever. Leaving after a lost connection also happens on the game's main thread now, which avoids errors while cleaning up.
+
+**For bug reports**
+- If the game stops finishing frames for 8 seconds or more during multiplayer, the log now says what the mod was doing at the time (or that the game itself was busy) and how many network messages were waiting. This helps track down a host that stops responding.
+
 ## 0.3.9-Patched
 
 The first public release of the fork. It contains everything from the private test builds below, plus:

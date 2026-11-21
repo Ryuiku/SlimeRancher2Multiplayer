@@ -14,7 +14,7 @@ internal static class BuildInfo
     // Version automatically gets a -dev at the end if SR2MP is compiled by GitHub Action
     // MelonVersion must stay numeric (it is also the assembly version), so the fork tag lives in Version.
     internal const string MelonVersion = "0.3.9";
-    internal const string Version = "0.3.9-Patched"; // Auto-Dev_Do_not_remove
+    internal const string Version = "0.3.9-Patched.2"; // Auto-Dev_Do_not_remove
     internal const string Discord = "https://discord.com/invite/a7wfBw5feU";
     // This build is the "Patched" fork of Ranching Together. Original mod: https://github.com/pyeight/SlimeRancher2Multiplayer
     internal const string UpstreamSourceCode = "https://github.com/pyeight/SlimeRancher2Multiplayer";
