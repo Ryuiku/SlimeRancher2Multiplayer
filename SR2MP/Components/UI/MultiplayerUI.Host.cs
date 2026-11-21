@@ -12,6 +12,7 @@ internal sealed partial class MultiplayerUI
     private string hostJoinCodeCopyStatus = string.Empty;
     private bool hostJoinCodePending;
     private bool hostJoinCodeIsManual;
+    private string hostLanAddress = string.Empty;
     
     private string hostAutoError = string.Empty;
     private string hostManualError = string.Empty;
@@ -126,6 +127,7 @@ internal sealed partial class MultiplayerUI
         if (string.IsNullOrWhiteSpace(hostJoinCode))
         {
             DrawText(hostJoinCodePending ? "Getting join code..." : "Join code unavailable");
+            DrawSameNetworkAddress();
             return;
         }
 
@@ -149,5 +151,18 @@ internal sealed partial class MultiplayerUI
         
         if (!string.IsNullOrWhiteSpace(hostJoinCodeCopyStatus))
             DrawText(hostJoinCodeCopyStatus);
+
+        DrawSameNetworkAddress();
+    }
+
+    // If the join code doesn't work for someone on this network, Manual join with this address does.
+    private void DrawSameNetworkAddress()
+    {
+        if (string.IsNullOrEmpty(hostLanAddress))
+            return;
+
+        DrawText(Main.StreamerMode
+            ? "Same network: Streamer Mode"
+            : $"Same network: IP {hostLanAddress}, port {Main.Server.Port}");
     }
 }

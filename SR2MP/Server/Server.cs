@@ -143,6 +143,26 @@ public sealed class SR2MPServer
             return;
 
         ClientManager.RemoveTimedOutClients();
+
+        // Sent from this timer, not the main thread, so players still hear from the host while it
+        // loads a zone. Not sent once this game has been stuck for a long time: its players then
+        // stop hearing from it and leave the world (after 30 s) instead of waiting on a hung host.
+        try
+        {
+            if (ClientManager.GetAllClients().Count > 0 && MainThreadDispatcher.SecondsSinceLastFrame < 45)
+            {
+                SendToAll(new EmptyPacket
+                {
+                    Type = PacketType.HeartbeatAck,
+                    Reliability = PacketReliability.Unreliable,
+                    Channel = NetworkChannel.Default
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            SrLogger.LogDebug($"Could not send the heartbeat: {ex.Message}");
+        }
     }
 
     private void OnDataReceived(byte[] data, int receivedBytes, IPEndPoint clientEp)

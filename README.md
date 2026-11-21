@@ -4,7 +4,7 @@
 
 **Ranching Together** is the Slime Rancher 2 multiplayer mod by **Shark (py8)**, with contributions from **AlchlcSystm** and **PinkTarr**. All credit for the mod itself goes to them: [original repository](https://github.com/pyeight/SlimeRancher2Multiplayer), [NexusMods](https://www.nexusmods.com/slimerancher2/mods/118), [Discord](https://discord.com/invite/a7wfBw5feU).
 
-This fork, **0.3.9-Patched**, builds on their version 0.3.9 and fixes a long list of sync problems found while playing: gardens, auto-feeders, weather, tornadoes, sloombers, vac streams, menus getting stuck after a zone load, and more. See the [changelog](CHANGELOG.md) for everything that changed.
+This fork, **0.3.9-Patched** (latest release: 0.3.9-Patched.2), builds on their version 0.3.9 and fixes a long list of sync problems found while playing: gardens, auto-feeders, weather, tornadoes, sloombers, vac streams, menus getting stuck after a zone load, and more. See the [changelog](CHANGELOG.md) for everything that changed.
 
 - **Contact:** open an issue on [this fork's issue tracker](https://github.com/Ryuiku/SlimeRancher2Multiplayer/issues).
 - **License:** GPLv3, like the original. The full source of every release is in this repository.
@@ -14,9 +14,9 @@ This fork, **0.3.9-Patched**, builds on their version 0.3.9 and fixes a long lis
 1. Install **MelonLoader 0.7.3** onto Slime Rancher 2 **1.3.0** with the [MelonLoader Installer](https://github.com/LavaGang/MelonLoader/releases/download/v0.7.1/MelonLoader.Installer.exe).
 2. Put [Starlight 4.0.4](https://github.com/ThatFinnDev/Starlight/releases/download/v4.0.4/Starlight.dll) (`Starlight.dll`) into the game's `Mods` folder.
 3. Download `SR2MP.dll` from the [latest release of this fork](https://github.com/Ryuiku/SlimeRancher2Multiplayer/releases/latest) and put it into the `Mods` folder. If you had the original mod, replace its `SR2MP.dll`.
-4. Start the game. The multiplayer window title shows `SR2MP v0.3.9-Patched`.
+4. Start the game. The multiplayer window title shows the version, for example `SR2MP v0.3.9-Patched.2`.
 
-Everyone in a session needs **0.3.9-Patched**. It can't play together with the original 0.3.9, and a host turns away a player on a different version. Joining a host still replaces the save you join with, exactly as described below, so join with an empty save.
+Everyone in a session needs **the same Patched version**. It can't play together with the original 0.3.9, and a host turns away a player on a different version. Joining a host still replaces the save you join with, exactly as described below, so join with an empty save.
 
 ---
 

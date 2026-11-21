@@ -30,6 +30,13 @@ public sealed class SR2MPClient
     private volatile bool connectionAcknowledged;
     private Timer? connectionTimeoutTimer;
     private const int ConnectionTimeoutSeconds = 10;
+
+    // The host sends a heartbeat every few seconds from a background timer, so even a host busy
+    // loading a zone is heard from. Nothing at all for this long means the host's game closed,
+    // hung or lost its connection: this game then leaves the world instead of waiting forever.
+    private Timer? hostSilenceTimer;
+    private long lastHeardFromHost;
+    private const int HostSilenceSeconds = 30;
     internal const int LanConnectionTimeoutSeconds = 4;
 
     /// <summary>
@@ -37,6 +44,15 @@ public sealed class SR2MPClient
     /// after trying the host's LAN address first).
     /// </summary>
     internal IPEndPoint? FallbackEndPoint;
+
+    /// <summary>
+    /// True once the host's LAN address from a join code gave up and the public address was tried.
+    /// Only used to explain a failed join.
+    /// </summary>
+    internal volatile bool LanAttemptFailed;
+
+    // Anything at all came back from the address of the current attempt.
+    private volatile bool heardFromHostThisAttempt;
 
     // Goes up every time a connection is started or torn down. A receive thread, timer or queued
     // action that belongs to an older connection compares it and does nothing.
@@ -131,6 +147,7 @@ public sealed class SR2MPClient
         {
             var generation = Interlocked.Increment(ref connectionGeneration);
             var parsedIp = IPAddress.Parse(serverIp);
+            heardFromHostThisAttempt = false;
 
             if (parsedIp.AddressFamily == AddressFamily.InterNetworkV6)
             {
@@ -191,6 +208,10 @@ public sealed class SR2MPClient
             connectionTimeoutTimer = new Timer(CheckConnectionTimeout, generation,
                 TimeSpan.FromSeconds(timeoutSeconds), Timeout.InfiniteTimeSpan);
 
+            Interlocked.Exchange(ref lastHeardFromHost, Environment.TickCount64);
+            Interlocked.Exchange(ref hostSilenceTimer,
+                new Timer(CheckHostSilence, generation, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)))?.Dispose();
+
             if (!subscribedToQuitting)
             {
                 subscribedToQuitting = true;
@@ -242,6 +263,24 @@ public sealed class SR2MPClient
         if (connectionAcknowledged || !isConnected)
             return;
 
+        // The host answered on its LAN address but has not let us in yet (a busy host can take a
+        // few seconds). It is reachable here, so stay and give it the normal time instead of
+        // switching to the public address, which many routers can't reach from inside.
+        if (heardFromHostThisAttempt && Interlocked.Exchange(ref FallbackEndPoint, null) != null)
+        {
+            SrLogger.LogMessage("The host answered on the local network, waiting for it to let you in...");
+            try
+            {
+                connectionTimeoutTimer?.Change(TimeSpan.FromSeconds(ConnectionTimeoutSeconds), Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The attempt ended in the meantime.
+            }
+
+            return;
+        }
+
         if (TryStartFallback(generation, "did not answer"))
             return;
 
@@ -250,8 +289,52 @@ public sealed class SR2MPClient
 
         SrLogger.LogError("Connection timeout: Server did not respond in time");
 
+        var message = LanAttemptFailed
+            ? "Could not reach the host on your network or over the internet. If you are on the host's network, " +
+              "use Manual join with the \"same network\" address shown on the host's screen."
+            : "The host did not answer. Check the join code (or IP and port), and that the host's server is running.";
+
         isConnecting = false;
-        Disconnect();
+        DisconnectOnMainThread(generation, message);
+    }
+
+    private void CheckHostSilence(object? state)
+    {
+        var generation = state is int created ? created : Volatile.Read(ref connectionGeneration);
+
+        if (!IsCurrentConnection(generation) || !isConnected || !connectionAcknowledged)
+            return;
+
+        var silentFor = (Environment.TickCount64 - Interlocked.Read(ref lastHeardFromHost)) / 1000;
+        if (silentFor < HostSilenceSeconds)
+            return;
+
+        // Once per connection.
+        Interlocked.Exchange(ref hostSilenceTimer, null)?.Dispose();
+
+        SrLogger.LogWarning($"Nothing heard from the host for {silentFor} s: their game closed, hung or lost its connection. Leaving the world.");
+        DisconnectOnMainThread(generation,
+            "Lost the connection to the host (no answer for 30 seconds). You left the world.");
+    }
+
+    // Leaving a world touches game objects (other players' avatars, actors), which is only allowed
+    // on the main thread. Timers and the receive thread come through here.
+    private void DisconnectOnMainThread(int generation, string? message)
+    {
+        MainThreadDispatcher.Instance.Enqueue(() =>
+        {
+            if (!IsCurrentConnection(generation) || !isConnected)
+                return;
+
+            Disconnect();
+
+            // After leaving: leaving clears the chat.
+            if (message != null)
+            {
+                MultiplayerUI.Instance.RegisterSystemMessage(message,
+                    $"SYSTEM_HOST_LOST_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", MultiplayerUI.SystemMessageDisconnect);
+            }
+        });
     }
 
     /// <summary>
@@ -266,6 +349,7 @@ public sealed class SR2MPClient
             return false;
 
         connectionTimeoutTimer?.Dispose();
+        LanAttemptFailed = true;
 
         SrLogger.LogWarning("Host did not answer on the local network, trying their public address...",
             $"LAN address {reason}, falling back to {fallback}");
@@ -308,6 +392,7 @@ public sealed class SR2MPClient
 
         connectionTimeoutTimer?.Dispose();
         connectionTimeoutTimer = null;
+        Interlocked.Exchange(ref hostSilenceTimer, null)?.Dispose();
 
         try
         {
@@ -353,6 +438,13 @@ public sealed class SR2MPClient
                     if (!IsCurrentConnection(generation))
                         break;
 
+                    heardFromHostThisAttempt = true;
+
+                    // Acknowledgements come from the host's network thread even when its game has
+                    // hung, so they don't count as hearing from the host.
+                    if (receiveBuffer[0] != (byte)PacketType.ReservedAcknowledge)
+                        Interlocked.Exchange(ref lastHeardFromHost, Environment.TickCount64);
+
                     packetManager.HandlePacket(receiveBuffer, receivedBytes, (IPEndPoint)remoteEp);
                     SrLogger.LogPacketSize($"Received {receivedBytes} bytes",
                         $"Received {receivedBytes} bytes from {remoteEp}");
@@ -382,7 +474,8 @@ public sealed class SR2MPClient
                     }
 
                     MultiplayerUI.Instance.RegisterSystemMessage("Could not join the world, check the MelonLoader console for details", $"SYSTEM_JOIN_10054_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", MultiplayerUI.SystemMessageClose);
-                    Disconnect();
+                    DisconnectOnMainThread(generation, null);
+                    break;
                 }
                 catch (ObjectDisposedException)
                 {
@@ -557,6 +650,7 @@ public sealed class SR2MPClient
 
             connectionTimeoutTimer?.Dispose();
             connectionTimeoutTimer = null;
+            Interlocked.Exchange(ref hostSilenceTimer, null)?.Dispose();
 
             reliabilityManager?.Stop();
 

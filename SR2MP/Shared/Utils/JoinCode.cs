@@ -72,45 +72,35 @@ public static class JoinCode
     }
 
     /// <summary>
-    /// True if this machine's own network (the one it reaches the internet through) is the same
-    /// subnet as the given LAN address. Other adapters (VPNs, virtual machines) are ignored: they
-    /// often use the same address ranges as somebody's home network without being it.
+    /// True if the given LAN address looks like it is on one of this machine's networks, so it is
+    /// worth trying before the public address. A wrong "yes" (a VPN or virtual machine adapter that
+    /// happens to use the same range) only costs a few seconds before the public address is tried;
+    /// a wrong "no" makes players on the host's own network fail on routers without NAT hairpinning.
     /// </summary>
     public static bool IsOnSameLan(IPAddress lanAddress)
     {
         try
         {
-            var localAddress = GetLocalLanAddress();
-            if (localAddress == null)
+            var target = lanAddress.GetAddressBytes();
+            if (target.Length != 4)
                 return false;
 
-            var mask = new byte[] { 255, 255, 255, 0 };
+            var homeMask = new byte[] { 255, 255, 255, 0 };
 
             foreach (var unicast in GetUsableIpv4Addresses())
             {
-                if (!unicast.Address.Equals(localAddress))
-                    continue;
+                var mask = unicast.IPv4Mask?.GetAddressBytes();
+                if (mask == null || mask.Length != 4 || mask.All(b => b == 0))
+                    mask = homeMask;
 
-                var adapterMask = unicast.IPv4Mask?.GetAddressBytes();
-                if (adapterMask != null && adapterMask.Length == 4 && adapterMask.Any(b => b != 0))
-                    mask = adapterMask;
-
-                break;
+                if (SameSubnet(unicast.Address.GetAddressBytes(), target, mask))
+                    return true;
             }
 
-            var local = localAddress.GetAddressBytes();
-            var target = lanAddress.GetAddressBytes();
-
-            if (local.Length != 4 || target.Length != 4)
-                return false;
-
-            for (var i = 0; i < 4; i++)
-            {
-                if ((local[i] & mask[i]) != (target[i] & mask[i]))
-                    return false;
-            }
-
-            return true;
+            // The adapter list can miss the address the system actually uses (some Wi-Fi drivers).
+            var localAddress = GetLocalLanAddress();
+            if (localAddress != null && SameSubnet(localAddress.GetAddressBytes(), target, homeMask))
+                return true;
         }
         catch (Exception ex)
         {
@@ -120,7 +110,21 @@ public static class JoinCode
         return false;
     }
 
-    private static IPAddress? GetLocalLanAddress()
+    private static bool SameSubnet(byte[] local, byte[] target, byte[] mask)
+    {
+        if (local.Length != 4 || target.Length != 4 || mask.Length != 4)
+            return false;
+
+        for (var i = 0; i < 4; i++)
+        {
+            if ((local[i] & mask[i]) != (target[i] & mask[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    internal static IPAddress? GetLocalLanAddress()
     {
         // Ask the system which address it would use to reach the internet. That is the address this
         // machine has on the router's network, whatever range the router hands out (some home

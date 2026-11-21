@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Il2CppInterop.Runtime.Attributes;
 using MelonLoader;
 using SR2MP.Packets.Utils;
@@ -28,8 +29,217 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
         Instance = obj.AddComponent<MainThreadDispatcher>();
         DontDestroyOnLoad(obj);
 
+        StartWatchdog();
+
         SrLogger.LogMessage("Main thread dispatcher initialized");
     }
+
+    #region Watchdog
+
+    // A host whose game stopped responding left no clue in its log. A background thread now notices
+    // when the game has not finished a frame for a while and logs what the mod was doing at the
+    // time (or that the game itself was busy), with how much network work was waiting.
+    private static long lastFrameTicks = Environment.TickCount64;
+    private static int packetsThisFrame;
+    private static System.Threading.Thread? watchdog;
+
+    // What the main thread is doing, kept cheap (no text per packet): a kind and the handler,
+    // action or label it is on. Only turned into text when a stall is reported.
+    private const int WorkGame = 0, WorkLabel = 1, WorkAction = 2, WorkHostPacket = 3, WorkPlayerPacket = 4;
+    private static volatile int workKind;
+    private static volatile object? workDetail = "starting";
+
+    private static void SetWork(int kind, object? detail)
+    {
+        workDetail = detail;
+        workKind = kind;
+    }
+
+    private static string DescribeWork() => DescribeWork(workKind, workDetail);
+
+    private static string DescribeWork(int kind, object? detail)
+    {
+        return kind switch
+        {
+            WorkLabel => detail as string ?? "?",
+            WorkAction => detail is Delegate d ? $"running a queued action ({d.Method.DeclaringType?.Name}.{d.Method.Name})" : "running a queued action",
+            WorkHostPacket => $"handling a packet from the host ({detail?.GetType().Name})",
+            WorkPlayerPacket => $"handling a packet from a player ({detail?.GetType().Name})",
+            _ => "in the game's own code (not the mod's per-frame work)"
+        };
+    }
+
+    /// <summary>
+    /// Seconds since the game last finished a frame. Any thread.
+    /// </summary>
+    internal static double SecondsSinceLastFrame => (Environment.TickCount64 - Interlocked.Read(ref lastFrameTicks)) / 1000.0;
+
+    private static void StartWatchdog()
+    {
+        if (watchdog != null)
+            return;
+
+        watchdog = new System.Threading.Thread(WatchdogLoop) { IsBackground = true, Name = "SR2MP main thread watchdog" };
+        watchdog.Start();
+    }
+
+    private static void WatchdogLoop()
+    {
+        var reportedFor = 0L;
+
+        while (true)
+        {
+            try
+            {
+                System.Threading.Thread.Sleep(1000);
+
+                var stalled = Environment.TickCount64 - Interlocked.Read(ref lastFrameTicks);
+
+                // Outside multiplayer the game may simply be paused in the background.
+                var inSession = Main.Server.IsRunning || Main.Client.IsConnected;
+
+                if (stalled < 8000 || !inSession)
+                {
+                    if (reportedFor > 0)
+                    {
+                        SrLogger.LogWarning($"Main thread is running again after about {reportedFor / 1000 + 1} s");
+                        reportedFor = 0;
+                    }
+
+                    continue;
+                }
+
+                // At 8 s, 30 s, then every minute while it lasts.
+                var due = reportedFor == 0 || (reportedFor < 30000 && stalled >= 30000) || stalled - reportedFor >= 60000;
+                if (!due)
+                    continue;
+
+                reportedFor = stalled;
+
+                var instance = Instance;
+                var queued = instance != null
+                    ? $"{instance.actionQueue.Count} actions, {instance.clientPacketQueue.Count} client and {instance.serverPacketQueue.Count} server packets waiting"
+                    : "no dispatcher";
+
+                var role = Main.Server.IsRunning ? "hosting" : Main.Client.IsConnected ? "connected to a host" : "not in multiplayer";
+
+                SrLogger.LogWarning(
+                    $"Main thread has not finished a frame for {stalled / 1000} s ({role}). " +
+                    $"It was last: {DescribeWork()}. {packetsThisFrame} packets handled in that frame so far; {queued}.");
+            }
+            catch
+            {
+                // Never let the watchdog itself take anything down.
+            }
+        }
+    }
+
+    #endregion
+
+    #region Hitch report
+
+    // Short stutters (a frame of a fraction of a second) never trip the watchdog. In multiplayer,
+    // count frames slower than HitchMs, and once a minute log how many there were and the slowest
+    // piece of the mod's own work, so a log shows whether the stutter is the mod or the game.
+    private const double HitchMs = 200;
+    private const double SlowWorkMs = 25;
+    private const double ReportEverySeconds = 60;
+
+    private static long lastUpdateTimestamp;
+    private static long reportWindowStart;
+    private static int hitches, hitchesWhileLoading, slowWorkCount;
+    private static double longestHitchMs, slowestWorkMs;
+    private static string? slowestWork;
+
+    private static double MillisecondsSince(long timestamp) =>
+        (Stopwatch.GetTimestamp() - timestamp) * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// Notes how long one piece of the mod's per-frame work took, if it was slow. Main thread only.
+    /// </summary>
+    internal static void NoteWork(string what, long startTimestamp) => NoteWork(WorkLabel, what, startTimestamp);
+
+    private static void NoteWork(int kind, object? detail, long startTimestamp)
+    {
+        var ms = MillisecondsSince(startTimestamp);
+        if (ms < SlowWorkMs)
+            return;
+
+        slowWorkCount++;
+        if (ms <= slowestWorkMs)
+            return;
+
+        slowestWorkMs = ms;
+        slowestWork = DescribeWork(kind, detail);
+    }
+
+    private static void TrackHitches()
+    {
+        var now = Stopwatch.GetTimestamp();
+        var previous = lastUpdateTimestamp;
+        lastUpdateTimestamp = now;
+
+        var inSession = Main.Server.IsRunning || Main.Client.IsConnected;
+        if (!inSession)
+        {
+            reportWindowStart = 0;
+            hitches = hitchesWhileLoading = slowWorkCount = 0;
+            longestHitchMs = slowestWorkMs = 0;
+            slowestWork = null;
+            return;
+        }
+
+        if (reportWindowStart == 0)
+            reportWindowStart = now;
+
+        if (previous != 0)
+        {
+            var frameMs = (now - previous) * 1000.0 / Stopwatch.Frequency;
+            if (frameMs >= HitchMs)
+            {
+                bool loading;
+                try
+                {
+                    loading = SystemContext.Instance?.SceneLoader?.IsSceneLoadInProgress ?? false;
+                }
+                catch
+                {
+                    loading = false;
+                }
+
+                if (loading)
+                    hitchesWhileLoading++;
+                else
+                {
+                    hitches++;
+                    if (frameMs > longestHitchMs)
+                        longestHitchMs = frameMs;
+                }
+            }
+        }
+
+        if ((now - reportWindowStart) / (double)Stopwatch.Frequency < ReportEverySeconds)
+            return;
+
+        if (hitches > 0 || slowWorkCount > 0)
+        {
+            var role = Main.Server.IsRunning ? "hosting" : "connected to a host";
+            var work = slowWorkCount > 0
+                ? $"{slowWorkCount} pieces of the mod's work took over {SlowWorkMs:0} ms, the slowest {slowestWorkMs:0} ms: {slowestWork}"
+                : $"none of the mod's own work took over {SlowWorkMs:0} ms";
+
+            SrLogger.LogMessage(
+                $"Stutter report ({role}, last minute): {hitches} frames over {HitchMs:0} ms, the longest {longestHitchMs:0} ms" +
+                $"{(hitchesWhileLoading > 0 ? $" (plus {hitchesWhileLoading} while a zone loaded)" : string.Empty)}; {work}.");
+        }
+
+        reportWindowStart = now;
+        hitches = hitchesWhileLoading = slowWorkCount = 0;
+        longestHitchMs = slowestWorkMs = 0;
+        slowestWork = null;
+    }
+
+    #endregion
 
     /// <summary>
     /// Keeps the game running while its window is not in front. A player who tabs out would
@@ -52,21 +262,47 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
 
     public void Update()
     {
+        Interlocked.Exchange(ref lastFrameTicks, Environment.TickCount64);
+        packetsThisFrame = 0;
+
+        try
+        {
+            TrackHitches();
+        }
+        catch
+        {
+            // Only a diagnostic.
+        }
+
         // Process general actions
         while (actionQueue.TryDequeue(out var action))
         {
+            var started = Stopwatch.GetTimestamp();
             try
             {
+                SetWork(WorkAction, action);
                 action.Invoke();
             }
             catch (Exception ex)
             {
                 SrLogger.LogError($"Error executing main thread action: {ex}");
             }
+            finally
+            {
+                NoteWork(WorkAction, action, started);
+            }
         }
 
         // Actor spawns and destroys that were held back while a zone was loading
+        const string deferredWork = "applying actor changes held back during a zone load";
+        var deferredStarted = Stopwatch.GetTimestamp();
+        SetWork(WorkLabel, deferredWork);
         SR2MP.Shared.Managers.NetworkActorManager.RunDeferredWorldChanges();
+        NoteWork(deferredWork, deferredStarted);
+
+        const string tickWork = "sending ranch, shop, feeder and market updates";
+        var tickStarted = Stopwatch.GetTimestamp();
+        SetWork(WorkLabel, tickWork);
 
         // Joins and resyncs that waited for the host's zone load
         try
@@ -118,11 +354,16 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             SrLogger.LogError($"Error sending market prices: {ex}");
         }
 
+        NoteWork(tickWork, tickStarted);
+
         // Process client packets
         while (clientPacketQueue.TryDequeue(out var clientCache))
         {
+            var started = Stopwatch.GetTimestamp();
             try
             {
+                packetsThisFrame++;
+                SetWork(WorkHostPacket, clientCache.Handler);
                 clientCache.Handler.Handle(clientCache.Reader);
             }
             catch (Exception ex)
@@ -133,16 +374,21 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             {
                 HandlingPacket = false;
                 PacketReader.Return(clientCache.Reader);
+                NoteWork(WorkHostPacket, clientCache.Handler, started);
             }
         }
 
         // Process server packets
         while (serverPacketQueue.TryDequeue(out var serverCache))
         {
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 // A packet that was still on its way in when the server closed is thrown away:
                 // handled now, an ownership claim would freeze an actor nobody moves anymore.
+                packetsThisFrame++;
+                SetWork(WorkPlayerPacket, serverCache.Handler);
+
                 if (Main.Server.IsRunning)
                     serverCache.Handler.Handle(serverCache.Reader, serverCache.ClientEp);
             }
@@ -154,8 +400,11 @@ internal sealed class MainThreadDispatcher : MonoBehaviour
             {
                 HandlingPacket = false;
                 PacketReader.Return(serverCache.Reader);
+                NoteWork(WorkPlayerPacket, serverCache.Handler, started);
             }
         }
+
+        SetWork(WorkGame, null);
     }
 
     [HideFromIl2Cpp]

@@ -4,6 +4,18 @@
 
 This fork builds on [Ranching Together](https://github.com/pyeight/SlimeRancher2Multiplayer) 0.3.9 by Shark (py8), with contributions from AlchlcSystm and PinkTarr. It targets Slime Rancher 2 1.3.0, MelonLoader 0.7.3 and Starlight 4.0.4.
 
+## 0.3.9-Patched.2
+
+**Fixes**
+- **Host sent to the main menu when entering the Sanctuary.** A plot's storage could be saved with more slots than the plot really has, and the game failed to load the area with "An error occurred". The extra slots are now cut off when the area loads, so saves that already have this load again (anything in the extra slots is listed in the log). The cause is fixed too: when a player replaced a plot in an area the host didn't have loaded, the old plot's storage was kept. It now starts empty, like the game does.
+- **Players stuck when the host's game closes or hangs.** The host now sends a heartbeat every few seconds. If a player hears nothing from the host for 30 seconds, they leave the world with a message instead of waiting forever. Leaving after a lost connection also happens on the game's main thread now, which avoids errors while cleaning up.
+- **Slimes missing after joining until a resync.** When the host started the server, only actors in the zones the host had loaded were listed for joining players. A player who then went to another zone, like the Sanctuary, saw none of the host's slimes there until they pressed Resync after the host had been there. The host now lists the whole world.
+- **Join code failing for players on the host's own network.** The code holds the host's home network address, but the joining game only tried it when its own network looked like the same subnet, which missed some setups (mesh Wi-Fi, a VPN in the way). It now also tries it when the joining player shares the host's public address. A host that answers on the home network is no longer dropped for being slow to let the player in, which used to switch to the public address that many routers can't reach from inside. The host's window also shows a "Same network" IP and port for Manual join, and a failed join now says what to try.
+
+**For bug reports**
+- Once a minute during multiplayer, if there were stutters (frames slower than 0.2 s), the log has a "Stutter report" line with how many there were and the slowest piece of the mod's own work, so it shows whether the mod or the game caused them.
+- If the game stops finishing frames for 8 seconds or more during multiplayer, the log now says what the mod was doing at the time (or that the game itself was busy) and how many network messages were waiting. This helps track down a host that stops responding.
+
 ## 0.3.9-Patched
 
 The first public release of the fork. It contains everything from the private test builds below, plus:

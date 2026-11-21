@@ -139,7 +139,9 @@ internal sealed partial class NetworkActorManager
             if (SceneContext.Instance?.player == null)
                 continue;
 
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             TakeOwnershipOfNearby(true);
+            SR2MP.Shared.Utils.MainThreadDispatcher.NoteWork($"checking {Actors.Count} actors for unowned slimes nearby", started);
         }
     }
 
@@ -164,9 +166,11 @@ internal sealed partial class NetworkActorManager
             SR2MP.Shared.Utils.SceneLoadTrace.Record(
                 $"Zone loaded: {SystemContext.Instance.SceneLoader.CurrentSceneGroup?.name ?? "?"}, rebuilding actors ({Actors.Count} known, {DeferredWorldChanges.Count} held-back changes)");
 
+            var rebuildStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 RebuildActorsForCurrentScene(gameModel!);
+                SR2MP.Shared.Utils.MainThreadDispatcher.NoteWork("rebuilding the actors of a zone that just loaded", rebuildStarted);
                 SR2MP.Shared.Utils.SceneLoadTrace.Record($"Actors rebuilt ({Actors.Count} known)");
             }
             catch (Exception ex)
